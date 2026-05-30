@@ -101,12 +101,23 @@ Option B — Docker (included in docker-compose.yml):
 
 ## Step 5 — Configure Environment
 
+Each deploy target has its own example file:
+
 ```bash
-cp config/.env.example config/.env
-# Edit .env with all values
+cp config/.env.example config/.env              # Voice API (Coolify or docker-compose api)
+cp config/n8n.env.example config/n8n.env        # Self-hosted n8n workflows
+cp livekit-agent/secrets.env.example livekit-agent/secrets.env   # LiveKit Cloud agent
+cp livekit-agent/.env.example livekit-agent/.env                 # Local agent dev only
 ```
 
-Key variables to set:
+| File | Used by |
+|------|---------|
+| `config/.env` | Coolify / `server.js` / docker-compose `api` |
+| `config/n8n.env` | Self-hosted n8n container |
+| `livekit-agent/secrets.env` | LiveKit Cloud (`lk agent deploy`) |
+| `livekit-agent/.env` | Local `python agent_worker.py dev` |
+
+Key variables for the voice API (`config/.env`):
 | Variable | Where to find |
 |---|---|
 | `TELNYX_API_KEY` | Telnyx Portal → API Keys |

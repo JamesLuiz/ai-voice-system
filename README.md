@@ -40,7 +40,8 @@ ai-voice-system/
 │   ├── workflow-3-escalation.json     # Real-time escalation engine
 │   └── workflow-error-handler.json   # Global error alerts
 ├── config/
-│   └── .env.example                   # All environment variables
+│   ├── .env.example              # Voice API → Coolify
+│   └── n8n.env.example           # Self-hosted n8n workflows
 └── docs/
     └── DEPLOYMENT.md                  # Full setup guide
 ```
@@ -48,8 +49,10 @@ ai-voice-system/
 ## Quick Start
 
 ```bash
-cp config/.env.example config/.env
-# Fill in all values in .env
+cp config/.env.example config/.env          # Voice API
+cp config/n8n.env.example config/n8n.env    # n8n (if using docker-compose)
+cp livekit-agent/.env.example livekit-agent/.env   # local agent dev only
+# LiveKit Cloud agent: cp livekit-agent/secrets.env.example livekit-agent/secrets.env
 docker compose up -d --build
 ```
 

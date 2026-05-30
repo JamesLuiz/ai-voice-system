@@ -26,7 +26,9 @@ services:
       context: .
       dockerfile: Dockerfile.agent
     restart: unless-stopped
-    env_file: ./config/.env
+    env_file:
+      - ./config/.env
+      - ./livekit-agent/.env
     depends_on:
       - api
     deploy:
@@ -52,7 +54,7 @@ services:
   n8n:
     image: n8nio/n8n:latest
     restart: unless-stopped
-    env_file: ./config/.env
+    env_file: ./config/n8n.env
     ports:
       - "5678:5678"
     environment:

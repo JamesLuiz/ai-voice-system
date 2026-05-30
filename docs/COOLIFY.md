@@ -39,35 +39,24 @@ Import n8n workflows from `n8n-workflows/` and activate them before going live.
 
 ## 3. Environment variables (Coolify → Environment)
 
-Copy from `config/.env.example`. **Required** for the API container:
+Copy from `config/.env.example` — **voice API only**:
 
-| Variable | Example / notes |
-|----------|-----------------|
-| `PORT` | `3000` (Coolify may set this automatically) |
-| `APP_BASE_URL` | `https://voice-api.flowcheq.com` |
-| `MONGODB_URI` | Atlas connection string |
-| `INTERNAL_API_KEY` | `openssl rand -hex 32` — shared with n8n HTTP nodes |
-| `N8N_CALL_ROUTER_WEBHOOK` | Production webhook URL from n8n WF1 |
-| `MONGO_API_URL` | Same as `APP_BASE_URL` (n8n calls this) |
-| `TELNYX_API_KEY` | Telnyx portal |
-| `TELNYX_PUBLIC_KEY` | Ed25519 webhook signing key (base64) |
-| `TELNYX_PHONE_NUMBER` | Your DID |
-| `TELNYX_CONNECTION_ID` | Call Control App connection ID |
-| `TELNYX_WEBHOOK_BASE_URL` | Same as `APP_BASE_URL` |
-| `LIVEKIT_HOST` | `wss://….livekit.cloud` |
-| `LIVEKIT_API_KEY` | LiveKit Cloud |
-| `LIVEKIT_API_SECRET` | LiveKit Cloud |
-| `LIVEKIT_SIP_URI` | SIP trunk URI |
-| `LIVEKIT_SIP_TRUNK_ID` | SIP trunk ID |
-| `LIVEKIT_AGENT_NAME` | `ai-receptionist` (must match LiveKit agent) |
-
-**Not needed on Coolify** (set elsewhere):
-
-| Variable | Where |
+| Variable | Notes |
 |----------|--------|
-| `GOOGLE_API_KEY`, `N8N_TRANSCRIPT_*`, `N8N_ESCALATION_*` | LiveKit Cloud `secrets.env` |
-| `HUMAN_*`, `TELEGRAM_*`, `ALERT_*` | Self-hosted n8n container env |
-| `N8N_ENCRYPTION_KEY`, `POSTGRES_PASSWORD` | n8n docker-compose only |
+| `PORT` | `3000` |
+| `INTERNAL_API_KEY` | Shared with n8n (`n8n.env`) |
+| `MONGODB_URI` | Atlas or managed MongoDB |
+| `N8N_CALL_ROUTER_WEBHOOK` | n8n WF1 production webhook |
+| `TELNYX_*` | API key, public key, phone, connection ID, webhook base URL |
+| `LIVEKIT_*` | Host, keys, SIP URI, trunk ID, agent name |
+
+**Set elsewhere** (see other example files):
+
+| File | Deploy target |
+|------|----------------|
+| `config/n8n.env.example` | Self-hosted n8n |
+| `livekit-agent/secrets.env.example` | LiveKit Cloud agent |
+| `livekit-agent/.env.example` | Local agent dev only |
 
 ---
 
@@ -87,8 +76,8 @@ The API verifies the Ed25519 signature and forwards events to `N8N_CALL_ROUTER_W
 
 In n8n workflows, HTTP nodes that call the voice API must use:
 
-- **Base URL**: `MONGO_API_URL` (your Coolify public URL)
-- **Header**: `x-api-key: <INTERNAL_API_KEY>`
+- **Base URL**: `MONGO_API_URL` from `config/n8n.env` (your Coolify public URL)
+- **Header**: `x-api-key: <INTERNAL_API_KEY>` (same value as in Coolify `config/.env`)
 
 Endpoints used by workflows: `/calls`, `/transcripts`, `/leads`, `/availability`, `/livekit/init-session`.
 
