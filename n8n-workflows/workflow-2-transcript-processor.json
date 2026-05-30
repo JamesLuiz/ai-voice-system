@@ -76,31 +76,29 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build OpenAI prompt from transcript array\nconst transcript = $json.transcript || [];\nconst callerNumber = $json.caller_number || 'unknown';\n\nconst formatted = transcript\n  .sort((a, b) => (a.sequence || 0) - (b.sequence || 0))\n  .map(t => `${t.speaker.toUpperCase()}: ${t.text}`)\n  .join('\\n');\n\nreturn [{ json: {\n  call_id:        $json.call_id,\n  caller_number:  callerNumber,\n  formatted_transcript: formatted,\n  transcript:     transcript,\n} }];"
+        "jsCode": "// Build summarization prompt from transcript array\nconst transcript = $json.transcript || [];\nconst callerNumber = $json.caller_number || 'unknown';\n\nconst formatted = transcript\n  .sort((a, b) => (a.sequence || 0) - (b.sequence || 0))\n  .map(t => `${t.speaker.toUpperCase()}: ${t.text}`)\n  .join('\\n');\n\nreturn [{ json: {\n  call_id:        $json.call_id,\n  caller_number:  callerNumber,\n  formatted_transcript: formatted,\n  transcript:     transcript,\n} }];"
       },
-      "name": "Format Transcript for OpenAI",
+      "name": "Format Transcript for Summary",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [1120, 420]
     },
     {
       "parameters": {
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpBearerAuth",
-        "url": "https://api.openai.com/v1/chat/completions",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={{ $env.GOOGLE_API_KEY }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 800,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a call analysis engine. Given a phone call transcript, extract structured data.\\nReturn ONLY valid JSON — no markdown, no explanation, no code fences.\\n\\nRequired JSON schema:\\n{\\n  \\\"caller_name\\\": string | null,\\n  \\\"business_name\\\": string | null,\\n  \\\"intent\\\": string,\\n  \\\"urgency\\\": \\\"low\\\" | \\\"medium\\\" | \\\"high\\\",\\n  \\\"budget\\\": string | null,\\n  \\\"summary\\\": string,\\n  \\\"key_requests\\\": string[],\\n  \\\"follow_up_action\\\": string,\\n  \\\"lead_score\\\": number,\\n  \\\"contact_details\\\": { \\\"phone\\\": string | null, \\\"email\\\": string | null },\\n  \\\"sentiment\\\": \\\"positive\\\" | \\\"neutral\\\" | \\\"negative\\\" | \\\"frustrated\\\",\\n  \\\"escalation_needed\\\": boolean\\n}\\n\\nLead score: 0-30 low intent, 31-60 moderate, 61-80 clear need, 81-100 high urgency+budget.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"=Caller: {{ $json.caller_number }}\\n\\nTRANSCRIPT:\\n{{ $json.formatted_transcript }}\\n\\nExtract and return JSON.\"\n    }\n  ]\n}",
+        "jsonBody": "={\n  \"systemInstruction\": {\n    \"parts\": [{\n      \"text\": \"You are a call analysis engine. Given a phone call transcript, extract structured data. Return ONLY valid JSON — no markdown, no explanation, no code fences.\\n\\nRequired JSON schema:\\n{\\n  \\\"caller_name\\\": string | null,\\n  \\\"business_name\\\": string | null,\\n  \\\"intent\\\": string,\\n  \\\"urgency\\\": \\\"low\\\" | \\\"medium\\\" | \\\"high\\\",\\n  \\\"budget\\\": string | null,\\n  \\\"summary\\\": string,\\n  \\\"key_requests\\\": string[],\\n  \\\"follow_up_action\\\": string,\\n  \\\"lead_score\\\": number,\\n  \\\"contact_details\\\": { \\\"phone\\\": string | null, \\\"email\\\": string | null },\\n  \\\"sentiment\\\": \\\"positive\\\" | \\\"neutral\\\" | \\\"negative\\\" | \\\"frustrated\\\",\\n  \\\"escalation_needed\\\": boolean\\n}\\n\\nLead score: 0-30 low intent, 31-60 moderate, 61-80 clear need, 81-100 high urgency+budget.\"\n    }]\n  },\n  \"contents\": [{\n    \"role\": \"user\",\n    \"parts\": [{\n      \"text\": \"Caller: {{ $json.caller_number }}\\n\\nTRANSCRIPT:\\n{{ $json.formatted_transcript }}\\n\\nExtract and return JSON.\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"temperature\": 0.1,\n    \"maxOutputTokens\": 800,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
         "options": {}
       },
-      "name": "OpenAI Summarize",
+      "name": "Gemini Summarize",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [1340, 420]
     },
     {
       "parameters": {
-        "jsCode": "// Parse OpenAI response and attach call_id\nconst raw     = $json.choices[0].message.content;\nconst summary = JSON.parse(raw);\n\nconst urgencyMap = { high: '🔴', medium: '🟡', low: '🟢' };\n\nconst notification = [\n  '📞 CALL ALERT',\n  '──────────────────',\n  `Caller:     ${$('Format Transcript for OpenAI').item.json.caller_number}`,\n  `Name:       ${summary.caller_name || 'Unknown'}`,\n  `Business:   ${summary.business_name || 'N/A'}`,\n  `${urgencyMap[summary.urgency] || '⚪'} Urgency:   ${(summary.urgency || 'low').toUpperCase()}`,\n  `Intent:     ${summary.intent}`,\n  `Lead Score: ${summary.lead_score}/100`,\n  '',\n  '📝 Summary:',\n  summary.summary,\n  '',\n  `✅ Action: ${summary.follow_up_action}`,\n  '──────────────────',\n  `Call ID: ${$('Format Transcript for OpenAI').item.json.call_id}`,\n].join('\\n');\n\nreturn [{ json: {\n  call_id:           $('Format Transcript for OpenAI').item.json.call_id,\n  caller_number:     $('Format Transcript for OpenAI').item.json.caller_number,\n  summary,\n  notification_text: notification,\n} }];"
+        "jsCode": "// Parse Gemini response and attach call_id\nconst raw     = $json.candidates?.[0]?.content?.parts?.[0]?.text;\nif (!raw) throw new Error('Gemini returned no text — check GOOGLE_API_KEY in n8n env');\nconst summary = JSON.parse(raw);\n\nconst urgencyMap = { high: '🔴', medium: '🟡', low: '🟢' };\n\nconst notification = [\n  '📞 CALL ALERT',\n  '──────────────────',\n  `Caller:     ${$('Format Transcript for Summary').item.json.caller_number}`,\n  `Name:       ${summary.caller_name || 'Unknown'}`,\n  `Business:   ${summary.business_name || 'N/A'}`,\n  `${urgencyMap[summary.urgency] || '⚪'} Urgency:   ${(summary.urgency || 'low').toUpperCase()}`,\n  `Intent:     ${summary.intent}`,\n  `Lead Score: ${summary.lead_score}/100`,\n  '',\n  '📝 Summary:',\n  summary.summary,\n  '',\n  `✅ Action: ${summary.follow_up_action}`,\n  '──────────────────',\n  `Call ID: ${$('Format Transcript for Summary').item.json.call_id}`,\n].join('\\n');\n\nreturn [{ json: {\n  call_id:           $('Format Transcript for Summary').item.json.call_id,\n  caller_number:     $('Format Transcript for Summary').item.json.caller_number,\n  summary,\n  notification_text: notification,\n} }];"
       },
       "name": "Parse Summary",
       "type": "n8n-nodes-base.code",
@@ -158,7 +156,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"call_id\": \"{{ $('Parse Summary').item.json.call_id }}\",\n  \"caller_number\": \"{{ $('Parse Summary').item.json.caller_number }}\",\n  \"direction\": \"inbound\",\n  \"status\": \"completed\",\n  \"handled_by\": \"ai\",\n  \"duration\": 0,\n  \"summary\": \"{{ $('Parse Summary').item.json.summary.summary }}\",\n  \"lead_score\": {{ $('Parse Summary').item.json.summary.lead_score }},\n  \"transcript\": \"{{ $('Format Transcript for OpenAI').item.json.formatted_transcript }}\",\n  \"structured_fields\": {{ JSON.stringify($('Parse Summary').item.json.summary) }}\n}",
+        "jsonBody": "={\n  \"call_id\": \"{{ $('Parse Summary').item.json.call_id }}\",\n  \"caller_number\": \"{{ $('Parse Summary').item.json.caller_number }}\",\n  \"direction\": \"inbound\",\n  \"status\": \"completed\",\n  \"handled_by\": \"ai\",\n  \"duration\": 0,\n  \"summary\": \"{{ $('Parse Summary').item.json.summary.summary }}\",\n  \"lead_score\": {{ $('Parse Summary').item.json.summary.lead_score }},\n  \"transcript\": \"{{ $('Format Transcript for Summary').item.json.formatted_transcript }}\",\n  \"structured_fields\": {{ JSON.stringify($('Parse Summary').item.json.summary) }}\n}",
         "options": { "response": { "response": { "neverError": true } } }
       },
       "name": "Notify Flowcheq: AI Call Completed",
@@ -190,9 +188,9 @@
         [{ "node": "Fetch Full Transcript", "type": "main", "index": 0 }]
       ]
     },
-    "Fetch Full Transcript":        { "main": [[{ "node": "Format Transcript for OpenAI", "type": "main", "index": 0 }]] },
-    "Format Transcript for OpenAI": { "main": [[{ "node": "OpenAI Summarize", "type": "main", "index": 0 }]] },
-    "OpenAI Summarize":             { "main": [[{ "node": "Parse Summary", "type": "main", "index": 0 }]] },
+    "Fetch Full Transcript":        { "main": [[{ "node": "Format Transcript for Summary", "type": "main", "index": 0 }]] },
+    "Format Transcript for Summary": { "main": [[{ "node": "Gemini Summarize", "type": "main", "index": 0 }]] },
+    "Gemini Summarize":             { "main": [[{ "node": "Parse Summary", "type": "main", "index": 0 }]] },
     "Parse Summary":                { "main": [[{ "node": "Update Call in MongoDB", "type": "main", "index": 0 }]] },
     "Update Call in MongoDB":       { "main": [[{ "node": "Upsert Lead", "type": "main", "index": 0 }]] },
     "Upsert Lead":                  { "main": [[{ "node": "Notify Flowcheq: AI Call Completed", "type": "main", "index": 0 }]] },

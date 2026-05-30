@@ -1,7 +1,7 @@
 {
   "name": "ai-voice-system",
   "version": "1.0.0",
-  "description": "Production AI voice call handling — Telnyx + LiveKit + n8n + OpenAI + MongoDB",
+  "description": "Production AI voice call handling — Telnyx + LiveKit + Gemini + n8n + MongoDB",
   "main": "server.js",
   "scripts": {
     "start":   "node server.js",
@@ -15,8 +15,7 @@
     "express":            "^4.19.2",
     "livekit-server-sdk": "^2.5.0",
     "mongoose":           "^8.5.0",
-    "node-fetch":         "^3.3.2",
-    "openai":             "^4.55.0"
+    "node-fetch":         "^3.3.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"

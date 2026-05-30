@@ -20,7 +20,6 @@ const crypto     = require('crypto');
 const { Call, Transcript, Lead, Availability } = require('./schemas');
 const telnyx   = require('./telnyx');
 const livekit  = require('./livekit-agent');
-const { summarizeCall, formatNotification } = require('./openai/summarize');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;

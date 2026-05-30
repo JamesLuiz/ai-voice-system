@@ -14,7 +14,6 @@ COPY server.js .
 COPY schemas/ ./schemas/
 COPY telnyx/ ./telnyx/
 COPY livekit-agent/index.js ./livekit-agent/index.js
-COPY openai/ ./openai/
 
 # Non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup

@@ -8,9 +8,7 @@ Production-ready inbound call handling with AI receptionist, real-time transcrip
 |---|---|
 | **Telnyx** | PSTN telephony, SIP bridging, call control |
 | **LiveKit** | Real-time AI voice agent (SIP + WebRTC) |
-| **OpenAI GPT-4o** | Conversation LLM + post-call summarization |
-| **Deepgram** | Real-time speech-to-text (STT) |
-| **ElevenLabs** | Natural text-to-speech (TTS) |
+| **Google Gemini** | Live voice agent + post-call summarization (n8n WF2) |
 | **n8n** | Workflow orchestration (3 workflows) |
 | **MongoDB** | Call records, transcripts, leads |
 | **Telegram** | Instant notifications + escalation alerts |
@@ -32,8 +30,6 @@ ai-voice-system/
 │   ├── index.js                       # LiveKit session manager (Node)
 │   ├── agent_worker.py                # Python VoicePipeline agent
 │   └── requirements.txt
-├── openai/
-│   └── summarize.js                   # Post-call GPT-4o summarization
 ├── n8n-workflows/
 │   ├── workflow-1-call-router.json    # Telnyx inbound → route decision
 │   ├── workflow-2-transcript-processor.json  # Transcript save + summarize

@@ -32,7 +32,7 @@ Inbound Call (PSTN)
                        ▼
         n8n Workflow 2: Transcript Processor
           └─ saves chunks to MongoDB
-          └─ on call_end: OpenAI summarize
+          └─ on call_end: Gemini summarize (n8n WF2)
           └─ structured JSON → MongoDB
           └─ upsert Lead
           └─ Telegram notification
@@ -52,7 +52,6 @@ Inbound Call (PSTN)
 - Docker + Docker Compose
 - Public domain with HTTPS (Telnyx requires HTTPS webhooks)
 - Accounts: Telnyx, LiveKit Cloud, Google AI (Gemini API key), Telegram Bot
-  - n8n post-call summarization may still use OpenAI in workflow 2 (n8n credential)
 
 ---
 
@@ -92,10 +91,9 @@ Option B — Docker (included in docker-compose.yml):
    - Settings → Import from file
 3. Configure credentials in n8n:
    - **HTTP Bearer Auth** → Add Telnyx API key
-   - **HTTP Bearer Auth** → Add OpenAI API key  
    - **Telegram Bot** → Add bot token
    - **SMTP** → Add email credentials
-4. Set environment variables in n8n container (or use n8n credentials store)
+4. Set environment variables in n8n (including `GOOGLE_API_KEY` for WF2 summarization)
 5. Activate all 3 workflows
 6. Copy webhook URLs and set in `.env` as `N8N_*_WEBHOOK` vars
 
@@ -255,6 +253,6 @@ db.leads.find({score: {$gte: 80}}).sort({last_contacted: -1})
 |---|---|
 | Webhook 401 | Verify `TELNYX_PUBLIC_KEY` in `.env` |
 | LiveKit session fails | Check `LIVEKIT_SIP_TRUNK_ID` and SIP trunk config |
-| Agent no audio | Verify Deepgram key and Telnyx SIP allowlist |
+| Agent no audio | Verify Gemini API key and Telnyx SIP allowlist |
 | n8n workflow not triggering | Confirm workflow is Active and webhook URL matches |
 | MongoDB connection failed | Check IP allowlist in Atlas |
