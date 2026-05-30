@@ -7,6 +7,8 @@ node_modules/
 !.env.example
 config/.env
 config/.env.local
+livekit-agent/secrets.env
+livekit-agent/.env
 
 # Python agent
 __pycache__/

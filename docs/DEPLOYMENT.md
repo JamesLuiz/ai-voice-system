@@ -23,10 +23,9 @@ Inbound Call (PSTN)
               LiveKit SIP bridge
                        │
                        ▼
-          Python agent_worker.py (VoicePipelineAgent)
-            STT: Deepgram nova-2-phonecall
-            LLM: OpenAI GPT-4o
-            TTS: ElevenLabs Turbo v2
+          Python agent_worker.py (Gemini Live RealtimeModel)
+            Voice: Charon (configurable)
+            Optional: n8n MCP tools
                        │
              transcript chunks → n8n Workflow 2
                        │
@@ -52,7 +51,8 @@ Inbound Call (PSTN)
 - Python 3.12+
 - Docker + Docker Compose
 - Public domain with HTTPS (Telnyx requires HTTPS webhooks)
-- Accounts: Telnyx, LiveKit Cloud, OpenAI, Deepgram, ElevenLabs, Telegram Bot
+- Accounts: Telnyx, LiveKit Cloud, Google AI (Gemini API key), Telegram Bot
+  - n8n post-call summarization may still use OpenAI in workflow 2 (n8n credential)
 
 ---
 
@@ -113,6 +113,9 @@ Key variables to set:
 | `TELNYX_PUBLIC_KEY` | Telnyx Portal → Webhooks → Signing Secret (Ed25519) |
 | `LIVEKIT_API_KEY` | LiveKit Cloud → Project Settings |
 | `LIVEKIT_SIP_URI` | LiveKit Cloud → SIP Trunks |
+| `GOOGLE_API_KEY` | Google AI Studio → API key (Gemini Live) |
+| `N8N_TRANSCRIPT_WEBHOOK_URL` | n8n workflow 2 webhook |
+| `N8N_ESCALATION_WEBHOOK_URL` | n8n workflow 3 webhook |
 | `INTERNAL_API_KEY` | Generate: `openssl rand -hex 32` |
 | `MONGODB_URI` | MongoDB Atlas connection string |
 
@@ -142,8 +145,31 @@ node server.js
 # Python agent worker (separate terminal)
 cd livekit-agent
 pip install -r requirements.txt
-python agent_worker.py dev
+python agent_worker.py console   # local test
+python agent_worker.py dev       # LiveKit playground
 ```
+
+### LiveKit Cloud (agent worker only)
+
+The voice agent runs on LiveKit Cloud; the Node API (`server.js`) runs elsewhere (Coolify, docker-compose, etc.).
+
+```bash
+cd livekit-agent
+cp secrets.env.example secrets.env
+# Edit secrets.env — GOOGLE_API_KEY + n8n webhook URLs
+
+lk cloud auth
+lk agent deploy --secrets-file secrets.env
+lk agent logs
+```
+
+Update secrets after deploy:
+
+```bash
+lk agent update-secrets --secrets-file secrets.env --overwrite
+```
+
+See `livekit-agent/secrets.env.example` for the full list. LiveKit Cloud injects `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` — do not duplicate those in `secrets.env` unless self-hosting.
 
 ---
 

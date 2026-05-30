@@ -1,23 +1,47 @@
-FROM python:3.12-slim
+# LiveKit agent worker — Gemini Live + optional n8n MCP
+# Used by docker-compose (service: agent). LiveKit Cloud uses livekit-agent/Dockerfile.
+# syntax=docker/dockerfile:1
+
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim AS build
+
+ENV PYTHONUNBUFFERED=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    python3-dev \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install audio dependencies for Silero VAD
-RUN apt-get update && apt-get install -y \
-    libsndfile1 \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY livekit-agent/requirements.txt .
+RUN python -m venv .venv
+ENV PATH="/app/.venv/bin:$PATH"
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY livekit-agent/agent_worker.py .
 
-# Non-root user
-RUN useradd -m -u 1001 appuser
-USER appuser
+RUN python agent_worker.py download-files
 
-# Download Silero VAD model at build time
-RUN python -c "from livekit.plugins import silero; silero.VAD.load()" || true
+FROM python:${PYTHON_VERSION}-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH"
+
+ARG UID=10001
+RUN adduser \
+    --disabled-password \
+    --gecos "" \
+    --home "/app" \
+    --shell "/sbin/nologin" \
+    --uid "${UID}" \
+    appuser
+
+WORKDIR /app
+COPY --from=build --chown=appuser:appuser /app /app
+
+USER appuser
 
 CMD ["python", "agent_worker.py", "start"]

@@ -1,26 +1,35 @@
 # AI Voice System — Deployment & Integration Handbook
 
-This guide walks you through deploying the `ai-voice-system` stack and connecting it to the **Flowcheq messaging app** frontend (`flowcheq-messaging`). It is written for junior developers: follow the steps in order, check each box before moving on, and keep a notes doc with every URL and secret you create.
+This guide walks you through deploying **three separate apps** and wiring them together for inbound voice, SMS, and in-browser WebRTC.
+
+| App | Repo / folder | Port (dev) | Role |
+|-----|---------------|------------|------|
+| **Flowcheq frontend** | `flowcheq-messaging/src/` | **5173** | React UI — calls `/api` only, no secrets |
+| **Flowcheq backend** | `flowcheq-messaging/backend/` | **3000** | Express API — SMS, contacts, WebRTC tokens, MongoDB |
+| **ai-voice-system** | `ai-voice-system/` | **3001** (API) | Voice gateway, n8n, LiveKit agent, shared MongoDB |
+
+Follow **Section 4** step by step. Use the later phases for account setup details, n8n node reference, and troubleshooting.
 
 ---
 
 ## Table of contents
 
 1. [What you are building](#1-what-you-are-building)
-2. [How the pieces fit together](#2-how-the-pieces-fit-together)
+2. [The three apps and how they connect](#2-the-three-apps-and-how-they-connect)
 3. [Prerequisites checklist](#3-prerequisites-checklist)
-4. [Phase 1 — Accounts and credentials](#4-phase-1--accounts-and-credentials)
-5. [Phase 2 — Configure environment variables](#5-phase-2--configure-environment-variables)
-6. [Phase 3 — Deploy the voice stack (Docker)](#6-phase-3--deploy-the-voice-stack-docker)
-7. [Phase 4 — Import and configure n8n workflows](#7-phase-4--import-and-configure-n8n-workflows)
-8. [Phase 5 — Wire Telnyx to the gateway](#8-phase-5--wire-telnyx-to-the-gateway)
-9. [Phase 6 — LiveKit SIP and the Python agent](#9-phase-6--livekit-sip-and-the-python-agent)
-10. [Phase 7 — End-to-end call test](#10-phase-7--end-to-end-call-test)
-11. [Phase 8 — Connect to the messaging frontend](#11-phase-8--connect-to-the-messaging-frontend)
-12. [Human-first then AI fallback (5-10s)](#12-human-first-then-ai-fallback-5-10s)
-13. [Day-to-day operations](#13-day-to-day-operations)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Quick reference](#15-quick-reference)
+4. [**Step-by-step: Deploy and connect all three apps**](#4-step-by-step-deploy-and-connect-all-three-apps) ← start here
+5. [Phase 1 — Accounts and credentials](#5-phase-1--accounts-and-credentials)
+6. [Phase 2 — Configure environment variables](#6-phase-2--configure-environment-variables)
+7. [Phase 3 — Deploy the voice stack (Docker)](#7-phase-3--deploy-the-voice-stack-docker)
+8. [Phase 4 — Import and configure n8n workflows](#8-phase-4--import-and-configure-n8n-workflows)
+9. [Phase 5 — Wire Telnyx](#9-phase-5--wire-telnyx)
+10. [Phase 6 — LiveKit SIP and the Python agent](#10-phase-6--livekit-sip-and-the-python-agent)
+11. [Phase 7 — End-to-end call test](#11-phase-7--end-to-end-call-test)
+12. [Flowcheq integration reference](#12-flowcheq-integration-reference)
+13. [Human-first then AI fallback](#13-human-first-then-ai-fallback)
+14. [Day-to-day operations](#14-day-to-day-operations)
+15. [Troubleshooting](#15-troubleshooting)
+16. [Quick reference](#16-quick-reference)
 
 ---
 
@@ -35,11 +44,11 @@ When someone dials your business phone number:
 5. During the call, transcript chunks go to **Workflow 2**, which saves them and, when the call ends, runs **GPT-4o summarization**, upserts a **lead**, and sends **Telegram** alerts.
 6. If the caller asks for a human or uses urgent keywords, **Workflow 3** escalates: marks the call, transfers via Telnyx, and alerts the team.
 
-The **Flowcheq frontend** is a separate app in the repo root with an Express backend (`backend/`). It handles SMS, contacts, in-app WebRTC voice (answer + callback), and a Calls tab. Voice orchestration still uses the **ai-voice-system** MongoDB; the two apps are linked via **n8n HTTP webhooks** into Flowcheq (`/api/webhook/voice/*`).
+The **Flowcheq frontend** never holds secrets. It talks only to the **Flowcheq backend**. The **ai-voice-system** orchestrates Telnyx voice events via **n8n** and notifies the Flowcheq backend over HTTP webhooks (`/api/webhook/voice/*`).
 
 ---
 
-## 2. How the pieces fit together
+## 2. The three apps and how they connect
 
 ### 2.1 System diagram
 
@@ -50,67 +59,82 @@ flowchart TB
   end
 
   subgraph Telnyx["Telnyx"]
-    DID[Phone number / Call Control App]
+    DID[Phone number]
+    SMS[SMS messaging profile]
   end
 
-  subgraph VoiceStack["ai-voice-system"]
-    API["server.js :3000"]
-    Agent["agent_worker.py"]
-    MongoV[(MongoDB voice_calls)]
-    N8N[n8n workflows]
+  subgraph VoiceStack["App 3 — ai-voice-system"]
+    API["Voice API :3001"]
+    Agent["LiveKit agent"]
+    N8N[n8n :5678]
+    Mongo[(MongoDB)]
   end
 
   subgraph LiveKitCloud["LiveKit Cloud"]
     Room[Room + SIP trunk]
   end
 
-  subgraph MessagingApp["flowcheq-messaging"]
-    FE[React frontend :5173]
-    MSGAPI["backend API :3000"]
-    MongoM[(MongoDB shared)]
+  subgraph Flowcheq["Apps 1 & 2 — flowcheq-messaging"]
+    FE["Frontend :5173"]
+    BE["Backend API :3000"]
   end
 
   Caller --> DID
-  DID -->|HTTPS webhook| API
-  API -->|POST event| N8N
+  DID -->|voice webhook| N8N
+  SMS -->|SMS webhook| BE
   N8N -->|REST x-api-key| API
-  API --> MongoV
-  N8N -->|answer + SIP bridge| Telnyx
-  N8N -->|POST /livekit/init-session| API
+  N8N -->|voice bridge x-api-key| BE
+  API --> Mongo
+  BE --> Mongo
+  N8N --> Telnyx
+  N8N --> API
   API --> Room
-  Telnyx -->|SIP| Room
-  Agent -->|join room| Room
-  Agent -->|transcript / escalation webhooks| N8N
-
-  FE -->|/api/*| MSGAPI
-  MSGAPI --> MongoM
-  N8N -.->|Phase 8 bridge| MSGAPI
+  Telnyx --> Room
+  Agent --> Room
+  Agent --> N8N
+  FE -->|"/api/*"| BE
 ```
 
-### 2.2 Two applications, shared MongoDB
+### 2.2 Who talks to whom
 
-| System | Entry point | Data store | Purpose |
-|--------|-------------|------------|---------|
-| `ai-voice-system` | `ai-voice-system/server.js` | MongoDB (`calls`, `call_transcripts`, `leads`) | Inbound AI voice pipeline |
-| `flowcheq-messaging` | `backend/src/index.ts` (API) + `src/` (React UI) | Same `MONGODB_URI` | SMS inbox, WebRTC voice, contacts, UI call log |
+| From | To | URL / mechanism | Purpose |
+|------|-----|-----------------|---------|
+| **Browser** | Flowcheq backend | `GET/POST /api/*` | Inbox, SMS, calls, WebRTC token |
+| **Telnyx SMS** | Flowcheq backend | `POST {APP_URL}/webhook/inbound` | Inbound text messages |
+| **Telnyx voice** | n8n | `POST {N8N}/webhook/telnyx/events` | Inbound call events |
+| **n8n** | Voice API | `{MONGO_API_URL}/calls`, `/transcripts`, `/livekit/init-session` | Voice DB + AI session |
+| **n8n** | Flowcheq backend | `{FLOWCHEQ_API_URL}/api/webhook/voice/*` | Ring overlay, call status, summaries |
+| **LiveKit agent** | n8n | transcript + escalation webhooks | Real-time AI pipeline |
+| **Voice API** (optional) | n8n | forwards `/telnyx/events` | Gateway pattern — see §9 |
 
-The frontend calls `/api` only (Vite proxy in dev). All secrets stay in backend `.env`. SMS uses Telnyx via `backend/src/services/smsService.ts`; voice uses Telnyx **Call Control** (different webhooks from SMS).
+### 2.3 Shared configuration (must match)
 
-### 2.3 Webhook routing (read this before configuring Telnyx)
+| Value | Flowcheq backend `.env` | ai-voice-system `config/.env` / n8n variables |
+|-------|-------------------------|-----------------------------------------------|
+| MongoDB | `MONGODB_URI` | `MONGODB_URI` (same database) |
+| Webhook auth | `WEBHOOK_SECRET` | `FLOWCHEQ_WEBHOOK_SECRET` (same string) |
+| Telnyx account | `TELNYX_API_KEY`, `TELNYX_PHONE_NUMBER` | Same key + number (voice uses Call Control too) |
+| n8n router URL | `N8N_CALL_ROUTER_WEBHOOK` | `N8N_CALL_ROUTER_WEBHOOK` (if using voice API gateway) |
 
-The repo supports two patterns:
+### 2.4 Dev vs production URLs
 
-| Pattern | Telnyx webhook URL | Who verifies signature? | Works with shipped WF1? |
-|---------|-------------------|-------------------------|-------------------------|
-| **A — Gateway (recommended in README)** | `https://YOUR-VOICE-API/telnyx/events` | `server.js` | Requires a small WF1 tweak* |
-| **B — Direct to n8n** | `https://YOUR-N8N/webhook/telnyx/events` | First node in WF1 | Yes, as shipped |
+| Service | Local dev | Production example |
+|---------|-----------|-------------------|
+| Flowcheq frontend | `http://localhost:5173` | `https://app.yourdomain.com` |
+| Flowcheq backend | `http://localhost:3000` | `https://api.yourdomain.com` |
+| Voice API | `http://localhost:3001` | `https://voice-api.yourdomain.com` |
+| n8n webhooks | tunnel → `https://xxx.ngrok.io/webhook/...` | `https://n8n.yourdomain.com/webhook/...` |
 
-\* `server.js` forwards a **flat, already-parsed** event (`event_type`, `call_session_id`, `caller_number`, …). Workflow 1’s first Code node expects **raw Telnyx body + signature headers**. If you use Pattern A, either:
+**Port rule:** Flowcheq backend and voice API both default to 3000 — run voice API on **3001** in dev (`PORT=3001` in `config/.env`).
 
-- Point Telnyx at n8n (Pattern B) and use `server.js` only for REST + LiveKit init, **or**
-- Add a branch at the top of WF1: if `call_session_id` is present and there is no `telnyx-signature-ed25519` header, skip verification and continue.
+### 2.5 Webhook routing (Telnyx voice)
 
-This handbook uses **Pattern B for the first successful test** (simplest with the JSON files provided), then **Pattern A** when you want a single public API domain.
+| Pattern | Telnyx Call Control webhook | Notes |
+|---------|----------------------------|--------|
+| **B — Direct to n8n (recommended first test)** | `https://YOUR-N8N/webhook/telnyx/events` | Works with shipped Workflow 1 |
+| **A — Via voice API gateway** | `https://YOUR-VOICE-API/telnyx/events` | Requires WF1 tweak for pre-parsed events |
+
+This handbook uses **Pattern B** for the first successful test.
 
 ---
 
@@ -132,18 +156,421 @@ Before you start, confirm you have:
   - MongoDB Atlas **or** use the Mongo container from `docker-compose.yml`
 - [ ] Optional: SMTP (SendGrid, etc.) for email alerts in Workflow 3.
 
-**Port conflict warning:** Both `flowcheq-messaging` backend (`PORT`, default **3000**) and `ai-voice-system/server.js` default to **port 3000**. Run the voice API on **3001** (`VOICE_API_URL`) or change one app's port. The Flowcheq frontend runs on **5173** in dev.
+**Port conflict warning:** Flowcheq backend uses **3000**, voice API uses **3001**, frontend uses **5173**. Never run both backends on the same port.
 
 ---
 
-## 4. Phase 1 — Accounts and credentials
+## 4. Step-by-step: Deploy and connect all three apps
+
+Complete each step and check the box before moving on. Keep a notes doc with every URL and secret.
+
+### Step 1 — Generate shared secrets
+
+```bash
+openssl rand -hex 32   # use for WEBHOOK_SECRET and FLOWCHEQ_WEBHOOK_SECRET
+openssl rand -hex 32   # use for INTERNAL_API_KEY (voice API ↔ n8n)
+openssl rand -hex 32   # use for N8N_ENCRYPTION_KEY (Docker)
+openssl rand -hex 16   # use for POSTGRES_PASSWORD (Docker)
+```
+
+| Secret | Where it goes |
+|--------|----------------|
+| Same random string | Flowcheq `WEBHOOK_SECRET` **and** voice `FLOWCHEQ_WEBHOOK_SECRET` **and** n8n variable `FLOWCHEQ_WEBHOOK_SECRET` |
+| Different random string | Voice `INTERNAL_API_KEY` **and** n8n variable `INTERNAL_API_KEY` |
+
+- [ ] Secrets generated and saved (password manager — never commit to git)
+
+---
+
+### Step 2 — Create third-party accounts
+
+You need credentials from Telnyx, LiveKit, OpenAI, Deepgram, ElevenLabs, and optionally Telegram. Full portal steps are in [Phase 1](#5-phase-1--accounts-and-credentials).
+
+- [ ] Telnyx: phone number, Call Control app, API key, Ed25519 public key
+- [ ] LiveKit Cloud: API key/secret, SIP trunk
+- [ ] OpenAI, Deepgram, ElevenLabs API keys
+- [ ] Telegram bot (optional alerts)
+
+---
+
+### Step 3 — Deploy shared MongoDB
+
+Both backends use the **same** `MONGODB_URI`.
+
+**Option A — Docker (comes with voice stack):**
+
+The `ai-voice-system/docker-compose.yml` starts Mongo on port `27017`. Use:
+
+```env
+MONGODB_URI=mongodb://localhost:27017/voice_calls
+```
+
+in **both** env files.
+
+**Option B — MongoDB Atlas:**
+
+Create a cluster, allow your server IP, copy the connection string into both env files.
+
+- [ ] MongoDB running and reachable
+- [ ] Same `MONGODB_URI` noted for Steps 4 and 6
+
+---
+
+### Step 4 — Deploy App 3: ai-voice-system
+
+```bash
+cd ai-voice-system
+cp config/.env.example config/.env
+```
+
+Edit `config/.env` — minimum for local dev:
+
+```env
+PORT=3001
+APP_BASE_URL=http://localhost:3001
+INTERNAL_API_KEY=<from Step 1>
+MONGODB_URI=mongodb://localhost:27017/voice_calls
+MONGO_API_URL=http://localhost:3001
+
+TELNYX_API_KEY=
+TELNYX_PUBLIC_KEY=
+TELNYX_PHONE_NUMBER=+15551234567
+TELNYX_CONNECTION_ID=
+TELNYX_WEBHOOK_BASE_URL=http://localhost:3001
+
+LIVEKIT_HOST=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+LIVEKIT_SIP_URI=sip.livekit.cloud
+LIVEKIT_SIP_TRUNK_ID=
+
+OPENAI_API_KEY=
+DEEPGRAM_API_KEY=
+ELEVENLABS_API_KEY=
+N8N_TRANSCRIPT_WEBHOOK_URL=https://YOUR-N8N/webhook/livekit/transcript
+N8N_ESCALATION_WEBHOOK_URL=https://YOUR-N8N/webhook/livekit/escalation
+N8N_CALL_ROUTER_WEBHOOK=https://YOUR-N8N/webhook/telnyx/events
+
+FLOWCHEQ_API_URL=http://localhost:3000
+FLOWCHEQ_WEBHOOK_SECRET=<same as Flowcheq WEBHOOK_SECRET>
+
+HUMAN_FORWARD_NUMBER=+15559876543
+AGENT_WEBRTC_SIP_USERNAME=
+HUMAN_RING_TIMEOUT_SEC=8
+HUMAN_AVAILABLE=true
+
+N8N_ENCRYPTION_KEY=<from Step 1>
+POSTGRES_PASSWORD=<from Step 1>
+```
+
+Start the stack:
+
+```bash
+docker compose up -d --build
+```
+
+Verify:
+
+```bash
+curl http://localhost:3001/health
+# {"status":"ok","db":"connected",...}
+```
+
+- [ ] Voice API healthy on port **3001**
+- [ ] n8n editor reachable at `http://localhost:5678` (or your tunnel URL)
+
+---
+
+### Step 5 — Configure n8n (connects voice ↔ Flowcheq)
+
+n8n is the **hub** between Telnyx, the voice API, LiveKit, and the Flowcheq backend.
+
+#### 5a. Import workflows
+
+In n8n → **Settings → Import from file**, import from `ai-voice-system/n8n-workflows/`:
+
+| File | Webhook path |
+|------|----------------|
+| `workflow-error-handler.json` | (error workflow) |
+| `workflow-1-call-router.json` | `/webhook/telnyx/events` |
+| `workflow-2-transcript-processor.json` | `/webhook/livekit/transcript` |
+| `workflow-3-escalation.json` | `/webhook/livekit/escalation` |
+
+#### 5b. Add n8n credentials (UI)
+
+| Credential | Used for |
+|------------|----------|
+| HTTP Bearer Auth (Telnyx) | WF1/WF3 Telnyx API nodes |
+| HTTP Bearer Auth (OpenAI) | WF2 summarization |
+| Telegram | WF2/WF3/error alerts |
+| SMTP | WF3 email (optional) |
+
+#### 5c. Set n8n environment variables
+
+**Settings → Variables** — add every variable workflows read as `$env.*`:
+
+```env
+TELNYX_PUBLIC_KEY
+TELNYX_PHONE_NUMBER
+TELNYX_CONNECTION_ID
+INTERNAL_API_KEY
+MONGO_API_URL=http://localhost:3001
+APP_BASE_URL=http://localhost:3001
+FLOWCHEQ_API_URL=http://localhost:3000
+FLOWCHEQ_WEBHOOK_SECRET
+HUMAN_FORWARD_NUMBER
+AGENT_WEBRTC_SIP_USERNAME
+HUMAN_RING_TIMEOUT_SEC=8
+HUMAN_AVAILABLE=true
+TELEGRAM_CHAT_ID
+ALERT_FROM_EMAIL
+ALERT_TO_EMAIL
+```
+
+> **Important:** The n8n Docker container does **not** auto-load `config/.env`. You must set these in n8n **Variables** or add them to the `n8n` service in `docker-compose.yml`.
+
+#### 5d. Activate and copy webhook URLs
+
+1. Toggle **Active** on all four workflows.
+2. Open each Webhook node → copy **Production URL**.
+3. Paste into `config/.env`:
+
+```env
+N8N_CALL_ROUTER_WEBHOOK=https://...
+N8N_TRANSCRIPT_WEBHOOK_URL=https://...
+N8N_ESCALATION_WEBHOOK_URL=https://...
+```
+
+4. Restart voice services:
+
+```bash
+docker compose restart api agent
+```
+
+- [ ] All workflows active
+- [ ] Webhook URLs in `config/.env`
+- [ ] n8n Variables match `config/.env`
+
+---
+
+### Step 6 — Deploy App 2: Flowcheq backend
+
+In the **flowcheq-messaging** repo (separate git repo from ai-voice-system):
+
+```bash
+cd flowcheq-messaging
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+PORT=3000
+APP_URL=http://localhost:3000
+FRONTEND_URL=http://localhost:5173
+
+MONGODB_URI=mongodb://localhost:27017/voice_calls
+
+TELNYX_API_KEY=
+TELNYX_PHONE_NUMBER=+15551234567
+TELNYX_CONNECTION_ID=
+TELNYX_WEBRTC_CONNECTION_ID=
+
+N8N_CALL_ROUTER_WEBHOOK=https://YOUR-N8N/webhook/telnyx/events
+WEBHOOK_SECRET=<same as FLOWCHEQ_WEBHOOK_SECRET>
+```
+
+Start the API:
+
+```bash
+npm install
+npm run dev:backend
+```
+
+Verify:
+
+```bash
+curl http://localhost:3000/api/health
+# {"status":"ok","db":"connected",...}
+```
+
+- [ ] Backend healthy on port **3000**
+- [ ] `WEBHOOK_SECRET` matches voice stack / n8n
+
+---
+
+### Step 7 — Deploy App 1: Flowcheq frontend
+
+The frontend has **no `.env` file**. It calls `/api` only.
+
+```bash
+# same repo, second terminal
+npm run dev:frontend
+```
+
+Open `http://localhost:5173`. Vite proxies `/api` → `http://localhost:3000`.
+
+**Production:** build static files and put a reverse proxy in front:
+
+```bash
+npm run build:frontend          # outputs dist/
+# Serve dist/ at https://app.yourdomain.com
+# Proxy /api → https://api.yourdomain.com
+```
+
+- [ ] Frontend loads at **5173**
+- [ ] API calls succeed (open browser devtools → Network → `/api/health`)
+
+---
+
+### Step 8 — Wire Telnyx to both backends
+
+Use the **same Telnyx number** for SMS and voice, but **different webhook URLs**:
+
+| Telnyx product | Webhook URL | App |
+|----------------|-------------|-----|
+| **Messaging profile** (SMS) | `https://YOUR-FLOWCHEQ-API/webhook/inbound` | Flowcheq backend |
+| **Call Control application** (voice) | `https://YOUR-N8N/webhook/telnyx/events` | n8n (WF1) |
+
+Telnyx portal checklist:
+
+- [ ] Call Control app: API v2, POST, HTTPS
+- [ ] Events enabled: `call.initiated`, `call.answered`, `call.hangup`
+- [ ] Number assigned to Call Control app
+- [ ] SMS profile webhook points at Flowcheq backend `APP_URL`
+
+Test: send an SMS to your number → should appear in Flowcheq inbox.
+
+---
+
+### Step 9 — Configure WebRTC simulring (phone + app ring together)
+
+Dual ring requires a Telnyx **WebRTC credential** on the Flowcheq backend and the SIP username in the voice stack.
+
+1. In Telnyx portal, create a **Credential Connection** → copy Connection ID → Flowcheq `TELNYX_WEBRTC_CONNECTION_ID`.
+2. Start Flowcheq frontend + backend. Open the app (or call `GET http://localhost:3000/api/voice/webrtc/token`).
+3. In Telnyx → **Telephony Credentials**, copy the `sip_username`.
+4. Set in **three places**:
+   - Flowcheq backend: credential is auto-created (cached in `backend/data/webrtc_credential.json`)
+   - `ai-voice-system/config/.env`: `AGENT_WEBRTC_SIP_USERNAME=<sip_username>`
+   - n8n Variables: `AGENT_WEBRTC_SIP_USERNAME=<sip_username>`
+5. Restart n8n workflows if needed.
+
+- [ ] `GET /api/voice/webrtc/status` returns enabled
+- [ ] `AGENT_WEBRTC_SIP_USERNAME` set in voice `.env` and n8n
+
+---
+
+### Step 10 — Verify the full connection chain
+
+#### Health checks
+
+```bash
+curl http://localhost:3001/health          # voice API
+curl http://localhost:3000/api/health      # Flowcheq backend
+curl http://localhost:3000/api/voice/webrtc/status
+```
+
+#### Inbound call (dual ring)
+
+1. Call your Telnyx number from a mobile phone.
+2. Expected within 2 seconds:
+   - [ ] n8n WF1 execution starts
+   - [ ] `HUMAN_FORWARD_NUMBER` phone rings
+   - [ ] Flowcheq app shows incoming-call overlay
+3. Answer on **phone** → app overlay dismisses within ~4s.
+4. Call again → tap **Answer in App** → WebRTC audio works; phone stops ringing.
+
+#### AI fallback
+
+1. Call again; do **not** answer for 8 seconds.
+2. Expected:
+   - [ ] AI greeting (LiveKit agent)
+   - [ ] After hangup: WF2 summary → Flowcheq Calls tab updated
+
+#### SMS
+
+1. Text your Telnyx number.
+2. Expected: message appears in Flowcheq inbox.
+
+---
+
+### Step 11 — Production deployment checklist
+
+| App | Deploy as | Public URL |
+|-----|-----------|------------|
+| Flowcheq frontend | Static files (CDN/nginx) | `https://app.yourdomain.com` |
+| Flowcheq backend | Node process / container | `https://api.yourdomain.com` |
+| Voice API | Docker `api` service | `https://voice-api.yourdomain.com` |
+| n8n | Docker `n8n` service | `https://n8n.yourdomain.com` |
+| LiveKit agent | Docker `agent` service | (outbound to LiveKit Cloud only) |
+
+Update env files with production HTTPS URLs:
+
+| Variable | Production value |
+|----------|------------------|
+| Flowcheq `APP_URL` | `https://api.yourdomain.com` |
+| Flowcheq `FRONTEND_URL` | `https://app.yourdomain.com` |
+| Voice `APP_BASE_URL` | `https://voice-api.yourdomain.com` |
+| Voice `MONGO_API_URL` | `https://voice-api.yourdomain.com` (or internal `http://api:3000` in Docker network) |
+| n8n `FLOWCHEQ_API_URL` | `https://api.yourdomain.com` |
+| n8n `MONGO_API_URL` | voice API URL reachable from n8n container |
+| Telnyx SMS webhook | `https://api.yourdomain.com/webhook/inbound` |
+| Telnyx voice webhook | `https://n8n.yourdomain.com/webhook/telnyx/events` |
+
+Set `docker-compose.yml` n8n `WEBHOOK_URL` to your public n8n base URL.
+
+- [ ] All URLs use HTTPS
+- [ ] CORS: Flowcheq `FRONTEND_URL` or `CORS_ORIGINS` set for production app domain
+- [ ] Secrets rotated from dev values
+
+---
+
+### Step 12 — Connection diagram (what you just built)
+
+```mermaid
+sequenceDiagram
+  participant Caller
+  participant Telnyx
+  participant n8n
+  participant VoiceAPI as Voice API :3001
+  participant Flowcheq as Flowcheq backend :3000
+  participant App as Frontend :5173
+  participant Agent as LiveKit agent
+
+  Note over App,Flowcheq: User opens app → /api/* → Flowcheq backend
+
+  Caller->>Telnyx: Inbound call
+  Telnyx->>n8n: POST /webhook/telnyx/events
+  n8n->>VoiceAPI: POST /calls (save)
+  n8n->>Flowcheq: POST /api/webhook/voice/call-started
+  Flowcheq->>App: notification + ring overlay
+  n8n->>Telnyx: Simulring phone + WebRTC SIP
+  alt Human answers
+    n8n->>Flowcheq: POST /api/webhook/voice/call-answered
+    Flowcheq->>App: dismiss overlay
+  else No answer 8s
+    n8n->>VoiceAPI: POST /livekit/init-session
+    VoiceAPI->>Agent: dispatch
+    Agent->>n8n: transcript webhooks
+    n8n->>Flowcheq: POST /api/webhook/voice/call-completed
+  end
+```
+
+When all steps pass, all three apps are deployed and connected.
+
+---
+
+## 5. Phase 1 — Accounts and credentials
+
+Detailed portal steps for [Step 2](#4-step-by-step-deploy-and-connect-all-three-apps) of the deployment guide.
 
 ### Step 1.1 — Telnyx (voice)
 
 1. Log in to the [Telnyx Mission Control Portal](https://portal.telnyx.com).
 2. Buy or port a **phone number** (E.164 format, e.g. `+15551234567`).
 3. Create a **Call Control Application**:
-   - **Webhook URL**: leave blank until Phase 5 (you will set either the voice API or n8n URL).
+   - **Webhook URL**: leave blank until [Step 8](#step-8--wire-telnyx-to-both-backends) (n8n URL).
    - **API version**: v2.
 4. Assign your number to this Call Control Application.
 5. Under **API Keys**, create a key → copy to `TELNYX_API_KEY`.
@@ -174,7 +601,7 @@ Before you start, confirm you have:
 
 ### Step 1.4 — Telegram
 
-1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → copy **token** → `TELEGRAM_BOT_TOKEN`.
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → copy **token** → add as **Telegram credential** in n8n (not in `.env`).
 2. Get your **chat ID**: message the bot, then open  
    `https://api.telegram.org/bot<TOKEN>/getUpdates`  
    and read `chat.id` → `TELEGRAM_CHAT_ID`.
@@ -191,7 +618,7 @@ Save as `INTERNAL_API_KEY`. **Never commit this to git.**
 
 ---
 
-## 5. Phase 2 — Configure environment variables
+## 6. Phase 2 — Configure environment variables
 
 ### Step 2.1 — Create the env file
 
@@ -228,7 +655,7 @@ If the messaging app already sends SMS via Telnyx (`TELNYX_API_KEY` in backend `
 
 ---
 
-## 6. Phase 3 — Deploy the voice stack (Docker)
+## 7. Phase 3 — Deploy the voice stack (Docker)
 
 ### Step 3.1 — Build and start
 
@@ -301,7 +728,7 @@ Run n8n via Docker or [n8n Cloud](https://n8n.io) and import workflows there.
 
 ---
 
-## 7. Phase 4 — Import and configure n8n workflows
+## 8. Phase 4 — Import and configure n8n workflows
 
 ### Step 4.1 — Open n8n
 
@@ -415,7 +842,7 @@ Without n8n, you would need to write and maintain all of this orchestration logi
 
 ---
 
-## 8. Phase 5 — Wire Telnyx to the gateway
+## 9. Phase 5 — Wire Telnyx
 
 ### Step 5.1 — Choose webhook URL
 
@@ -455,7 +882,7 @@ If nothing appears:
 
 ---
 
-## 9. Phase 6 — LiveKit SIP and the Python agent
+## 10. Phase 6 — LiveKit SIP and the Python agent
 
 ### Step 9.1 — Confirm agent is running
 
@@ -507,7 +934,7 @@ On each spoken line, the agent POSTs to `N8N_TRANSCRIPT_WEBHOOK_URL`. On escalat
 
 ---
 
-## 10. Phase 7 — End-to-end call test
+## 11. Phase 7 — End-to-end call test
 
 Use this script as a QA checklist.
 
@@ -557,11 +984,11 @@ db.leads.find().sort({ last_contacted: -1 }).limit(5)
 
 ---
 
-## 11. Phase 8 — Connect to the messaging frontend
+## 12. Flowcheq integration reference
 
-The Flowcheq messaging app (`flowcheq-messaging` repo root) is **already wired** to the voice stack via n8n webhooks. This phase documents how it works and what to configure.
+This section expands on [Section 4 Steps 6–9](#4-step-by-step-deploy-and-connect-all-three-apps) — how the Flowcheq frontend and backend connect to the voice stack.
 
-### 11.1 — Architecture today
+### 12.1 — Inbound call sequence
 
 ```mermaid
 sequenceDiagram
@@ -600,7 +1027,7 @@ sequenceDiagram
 | Dev proxy | `vite.config.ts` | Proxies `/api` from `:5173` → backend `:3000` |
 | Voice bridge | `backend/src/services/voiceBridgeService.ts` | Maps n8n payloads → contacts, calls, notifications |
 
-### 11.2 — Run both apps
+### 12.2 — Run both Flowcheq apps
 
 **Messaging app (repo root):**
 
@@ -621,23 +1048,26 @@ docker compose up -d --build   # or PORT=3001 node server.js
 
 Set `FLOWCHEQ_API_URL` in `ai-voice-system/config/.env` to your messaging app URL (e.g. `http://localhost:3000` for local dev).
 
-### 11.3 — Messaging `.env` (repo root)
+### 12.3 — Flowcheq backend `.env`
 
-Copy `.env.example` → `.env`. Minimum for voice + SMS:
+Copy `.env.example` → `.env`. See [Step 6](#step-6--deploy-app-2-flowcheq-backend):
 
 ```env
+PORT=3000
 APP_URL=http://localhost:3000
+FRONTEND_URL=http://localhost:5173
+MONGODB_URI=mongodb://localhost:27017/voice_calls
 TELNYX_API_KEY=
 TELNYX_PHONE_NUMBER=+15551234567
-TELNYX_CONNECTION_ID=              # Call Control connection (n8n outbound legs)
-TELNYX_WEBRTC_CONNECTION_ID=       # Credential connection for in-browser calls
-WEBHOOK_SECRET=                    # Same value as FLOWCHEQ_WEBHOOK_SECRET in n8n
-N8N_CALL_ROUTER_WEBHOOK=           # Optional; for future outbound via n8n
+TELNYX_CONNECTION_ID=
+TELNYX_WEBRTC_CONNECTION_ID=
+N8N_CALL_ROUTER_WEBHOOK=https://YOUR-N8N/webhook/telnyx/events
+WEBHOOK_SECRET=                    # Same as FLOWCHEQ_WEBHOOK_SECRET in n8n
 ```
 
 After first WebRTC token request, note the agent `sip_username` from Telnyx (or `backend/data/webrtc_credential.json`) and set **`AGENT_WEBRTC_SIP_USERNAME`** in the voice-system `.env` so n8n can simulring the browser.
 
-### 11.4 — n8n → Flowcheq webhooks
+### 12.4 — n8n → Flowcheq webhooks
 
 All use header `x-api-key: {FLOWCHEQ_WEBHOOK_SECRET}`.
 
@@ -649,7 +1079,7 @@ All use header `x-api-key: {FLOWCHEQ_WEBHOOK_SECRET}`.
 | AI call completed | WF2 bridge node | `POST /api/webhook/voice/call-completed` | Summary, transcript, lead score on call record |
 | AI escalation | WF3 | `POST /api/webhook/voice/escalation` | Escalation overlay + simulring (if configured) |
 
-### 11.5 — In-app voice (WebRTC)
+### 12.5 — In-app voice (WebRTC)
 
 Implemented in `src/context/TelnyxVoiceContext.tsx` using `@telnyx/webrtc`.
 
@@ -668,7 +1098,7 @@ Backend routes (`/api/voice/webrtc/*`):
 - `POST /webrtc/call-answered` — mark call in-progress, dismiss duplicate rings
 - `POST /webrtc/outbound-started` / `call-ended` — log WebRTC sessions
 
-### 11.6 — Dual ring: phone + app, first answer wins
+### 12.6 — Dual ring: phone + app, first answer wins
 
 **Requirement:** Human phone and Flowcheq app ring together; answering on either stops the other.
 
@@ -692,7 +1122,7 @@ HUMAN_RING_TIMEOUT_SEC=8             # Seconds before AI fallback
 TELNYX_CONNECTION_ID=                # Used for outbound simulring legs
 ```
 
-### 11.7 — SMS + voice on same Telnyx account
+### 12.7 — SMS + voice on same Telnyx account
 
 | Feature | Webhook URL | Handler |
 |---------|-------------|---------|
@@ -701,7 +1131,7 @@ TELNYX_CONNECTION_ID=                # Used for outbound simulring legs
 
 Same `TELNYX_API_KEY` and often the same DID; different Telnyx products (Messaging vs Call Control).
 
-### 11.8 — Verify in the UI
+### 12.8 — Verify in the UI
 
 1. Start messaging app → ensure WebRTC status is enabled (`GET /api/voice/webrtc/status`).
 2. Place inbound test call → **phone rings** and **app shows full-screen overlay**.
@@ -712,7 +1142,7 @@ Same `TELNYX_API_KEY` and often the same DID; different Telnyx products (Messagi
 
 ---
 
-## 12. Human-first then AI fallback (5–10s)
+## 13. Human-first then AI fallback
 
 **Status: implemented** in `workflow-1-call-router.json` with dual simulring (phone + WebRTC app).
 
@@ -805,7 +1235,7 @@ Flowcheq upserts the call record and creates a notification. Calls tab and conta
 
 ---
 
-## 13. Day-to-day operations
+## 14. Day-to-day operations
 
 ### Toggle AI vs human (API)
 
@@ -843,7 +1273,7 @@ db.leads.find({ score: { $gte: 80 } }).sort({ last_contacted: -1 })
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
@@ -871,7 +1301,7 @@ curl -X POST "https://YOUR-N8N/webhook/livekit/transcript" \
 
 ---
 
-## 15. Quick reference
+## 16. Quick reference
 
 ### Voice API endpoints (all n8n-facing routes need `x-api-key`)
 
@@ -904,12 +1334,14 @@ curl -X POST "https://YOUR-N8N/webhook/livekit/transcript" \
 | POST | `/api/voice/webrtc/accept` | Bridge caller to browser |
 | POST | `/api/voice/webrtc/call-answered` | Mark in-progress from app |
 
-### Environment files
+### Environment files (all three apps)
 
-| File | System |
-|------|--------|
-| `ai-voice-system/config/.env` | Voice stack + n8n vars (`AGENT_WEBRTC_SIP_USERNAME`, `HUMAN_FORWARD_NUMBER`) |
-| `.env` (repo root) | Messaging: Telnyx SMS/voice, WebRTC, `WEBHOOK_SECRET` |
+| File | App | Purpose |
+|------|-----|---------|
+| `flowcheq-messaging/.env` | Flowcheq backend | SMS, WebRTC, MongoDB, `WEBHOOK_SECRET` |
+| *(none)* | Flowcheq frontend | No secrets — calls `/api` only |
+| `ai-voice-system/config/.env` | Voice API + agent | Telnyx voice, LiveKit, AI keys |
+| n8n **Settings → Variables** | n8n | `$env.*` used by workflows — must mirror voice `.env` bridge vars |
 
 ### Related docs
 
@@ -920,19 +1352,21 @@ curl -X POST "https://YOUR-N8N/webhook/livekit/transcript" \
 
 ## Deployment order cheat sheet
 
-Print this and check off as you go:
+Print this and check off as you go (full detail in [Section 4](#4-step-by-step-deploy-and-connect-all-three-apps)):
 
-1. [ ] Create Telnyx, LiveKit, OpenAI, Deepgram, ElevenLabs, Telegram accounts  
-2. [ ] Copy `config/.env.example` → `config/.env` and fill all variables  
-3. [ ] `docker compose up -d --build`  
-4. [ ] `curl /health` → DB connected  
-5. [ ] Import 4 n8n workflows, credentials, variables  
-6. [ ] Activate workflows; copy webhook URLs into `.env`; restart `api` + `agent`  
-7. [ ] Point Telnyx Call Control webhook to n8n (first test)  
-8. [ ] Place test call → phone + app ring → answer one → other stops  
-9. [ ] Test no-answer → AI answers → transcript → Flowcheq Calls tab  
-10. [ ] Test escalation and outbound WebRTC callback from chat  
-11. [ ] Set `AGENT_WEBRTC_SIP_USERNAME` after first WebRTC credential creation  
-12. [ ] Confirm dual ring, AI fallback, and call summaries in Flowcheq UI  
+1. [ ] Generate shared secrets (`WEBHOOK_SECRET`, `INTERNAL_API_KEY`, Docker keys)
+2. [ ] Create Telnyx, LiveKit, OpenAI, Deepgram, ElevenLabs accounts
+3. [ ] Start MongoDB (Docker or Atlas) — same URI for both backends
+4. [ ] **App 3:** `ai-voice-system` → `config/.env` → `docker compose up -d --build` → `curl :3001/health`
+5. [ ] Import + activate n8n workflows; set credentials + Variables; copy webhook URLs into `.env`
+6. [ ] **App 2:** Flowcheq backend → `.env` → `npm run dev:backend` → `curl :3000/api/health`
+7. [ ] **App 1:** Flowcheq frontend → `npm run dev:frontend` → open `:5173`
+8. [ ] Telnyx SMS webhook → Flowcheq `APP_URL/webhook/inbound`
+9. [ ] Telnyx Call Control webhook → n8n `/webhook/telnyx/events`
+10. [ ] Set `AGENT_WEBRTC_SIP_USERNAME` (Flowcheq WebRTC + voice `.env` + n8n Variables)
+11. [ ] Test inbound call → phone + app ring → answer one → other stops
+12. [ ] Test no-answer 8s → AI → summary in Flowcheq Calls tab
+13. [ ] Test SMS in Flowcheq inbox
+14. [ ] Production: HTTPS URLs, CORS, rotate secrets
 
-When all steps pass, you have a production-capable AI voice line integrated with your messaging CRM.
+When all steps pass, all three apps are deployed and connected.
