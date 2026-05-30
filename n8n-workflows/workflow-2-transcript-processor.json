@@ -1,0 +1,207 @@
+{
+  "name": "WORKFLOW 2 — LiveKit Transcript Processor",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "livekit/transcript",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "LiveKit Transcript Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "livekit-transcript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Route: transcript chunk vs call_ended event\nconst body  = $json;\nconst isEnd = body.event_type === 'call_ended';\nreturn [{ json: { ...body, is_end_event: isEnd } }];"
+      },
+      "name": "Parse Event Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_end_event }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "name": "Is Transcript Chunk?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/transcripts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\":   \"{{ $json.call_id }}\",\n  \"speaker\":   \"{{ $json.speaker }}\",\n  \"text\":      \"{{ $json.text }}\",\n  \"timestamp\": \"{{ $json.timestamp }}\",\n  \"sequence\":  {{ $json.sequence || 0 }}\n}",
+        "options": {}
+      },
+      "name": "Save Transcript Chunk",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/transcripts/{{ $json.call_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Fetch Full Transcript",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build OpenAI prompt from transcript array\nconst transcript = $json.transcript || [];\nconst callerNumber = $json.caller_number || 'unknown';\n\nconst formatted = transcript\n  .sort((a, b) => (a.sequence || 0) - (b.sequence || 0))\n  .map(t => `${t.speaker.toUpperCase()}: ${t.text}`)\n  .join('\\n');\n\nreturn [{ json: {\n  call_id:        $json.call_id,\n  caller_number:  callerNumber,\n  formatted_transcript: formatted,\n  transcript:     transcript,\n} }];"
+      },
+      "name": "Format Transcript for OpenAI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 420]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 800,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a call analysis engine. Given a phone call transcript, extract structured data.\\nReturn ONLY valid JSON — no markdown, no explanation, no code fences.\\n\\nRequired JSON schema:\\n{\\n  \\\"caller_name\\\": string | null,\\n  \\\"business_name\\\": string | null,\\n  \\\"intent\\\": string,\\n  \\\"urgency\\\": \\\"low\\\" | \\\"medium\\\" | \\\"high\\\",\\n  \\\"budget\\\": string | null,\\n  \\\"summary\\\": string,\\n  \\\"key_requests\\\": string[],\\n  \\\"follow_up_action\\\": string,\\n  \\\"lead_score\\\": number,\\n  \\\"contact_details\\\": { \\\"phone\\\": string | null, \\\"email\\\": string | null },\\n  \\\"sentiment\\\": \\\"positive\\\" | \\\"neutral\\\" | \\\"negative\\\" | \\\"frustrated\\\",\\n  \\\"escalation_needed\\\": boolean\\n}\\n\\nLead score: 0-30 low intent, 31-60 moderate, 61-80 clear need, 81-100 high urgency+budget.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"=Caller: {{ $json.caller_number }}\\n\\nTRANSCRIPT:\\n{{ $json.formatted_transcript }}\\n\\nExtract and return JSON.\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "name": "OpenAI Summarize",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse OpenAI response and attach call_id\nconst raw     = $json.choices[0].message.content;\nconst summary = JSON.parse(raw);\n\nconst urgencyMap = { high: '🔴', medium: '🟡', low: '🟢' };\n\nconst notification = [\n  '📞 CALL ALERT',\n  '──────────────────',\n  `Caller:     ${$('Format Transcript for OpenAI').item.json.caller_number}`,\n  `Name:       ${summary.caller_name || 'Unknown'}`,\n  `Business:   ${summary.business_name || 'N/A'}`,\n  `${urgencyMap[summary.urgency] || '⚪'} Urgency:   ${(summary.urgency || 'low').toUpperCase()}`,\n  `Intent:     ${summary.intent}`,\n  `Lead Score: ${summary.lead_score}/100`,\n  '',\n  '📝 Summary:',\n  summary.summary,\n  '',\n  `✅ Action: ${summary.follow_up_action}`,\n  '──────────────────',\n  `Call ID: ${$('Format Transcript for OpenAI').item.json.call_id}`,\n].join('\\n');\n\nreturn [{ json: {\n  call_id:           $('Format Transcript for OpenAI').item.json.call_id,\n  caller_number:     $('Format Transcript for OpenAI').item.json.caller_number,\n  summary,\n  notification_text: notification,\n} }];"
+      },
+      "name": "Parse Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 420]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $json.call_id }}",
+        "method": "PATCH",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\":    \"completed\",\n  \"end_time\":  \"{{ new Date().toISOString() }}\",\n  \"summary\":   \"{{ $json.summary.summary }}\",\n  \"lead_score\": {{ $json.summary.lead_score }},\n  \"structured_fields\": {\n    \"caller_name\":     \"{{ $json.summary.caller_name }}\",\n    \"business_name\":   \"{{ $json.summary.business_name }}\",\n    \"intent\":          \"{{ $json.summary.intent }}\",\n    \"urgency\":         \"{{ $json.summary.urgency }}\",\n    \"budget\":          \"{{ $json.summary.budget }}\",\n    \"key_requests\":    {{ JSON.stringify($json.summary.key_requests) }},\n    \"follow_up_action\":\"{{ $json.summary.follow_up_action }}\",\n    \"contact_details\": {{ JSON.stringify($json.summary.contact_details) }}\n  }\n}",
+        "options": {}
+      },
+      "name": "Update Call in MongoDB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1780, 420]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/leads",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"phone_number\":  \"{{ $json.caller_number }}\",\n  \"name\":          \"{{ $json.summary.caller_name }}\",\n  \"business_name\": \"{{ $json.summary.business_name }}\",\n  \"intent\":        \"{{ $json.summary.intent }}\",\n  \"urgency\":       \"{{ $json.summary.urgency }}\",\n  \"score\":         {{ $json.summary.lead_score }},\n  \"call_ids\":      [\"{{ $json.call_id }}\"],\n  \"last_contacted\":\"{{ new Date().toISOString() }}\"\n}",
+        "options": {}
+      },
+      "name": "Upsert Lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2000, 420]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.FLOWCHEQ_API_URL }}/api/webhook/voice/call-completed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{ $env.FLOWCHEQ_WEBHOOK_SECRET }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $('Parse Summary').item.json.call_id }}\",\n  \"caller_number\": \"{{ $('Parse Summary').item.json.caller_number }}\",\n  \"direction\": \"inbound\",\n  \"status\": \"completed\",\n  \"handled_by\": \"ai\",\n  \"duration\": 0,\n  \"summary\": \"{{ $('Parse Summary').item.json.summary.summary }}\",\n  \"lead_score\": {{ $('Parse Summary').item.json.summary.lead_score }},\n  \"transcript\": \"{{ $('Format Transcript for OpenAI').item.json.formatted_transcript }}\",\n  \"structured_fields\": {{ JSON.stringify($('Parse Summary').item.json.summary) }}\n}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Notify Flowcheq: AI Call Completed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2220, 420]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text":   "={{ $('Parse Summary').item.json.notification_text }}",
+        "additionalFields": {}
+      },
+      "name": "Telegram Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [2440, 420],
+      "credentials": {
+        "telegramApi": { "id": "telegram-bot-creds", "name": "Telegram Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "LiveKit Transcript Webhook":   { "main": [[{ "node": "Parse Event Type", "type": "main", "index": 0 }]] },
+    "Parse Event Type":             { "main": [[{ "node": "Is Transcript Chunk?", "type": "main", "index": 0 }]] },
+    "Is Transcript Chunk?": {
+      "main": [
+        [{ "node": "Save Transcript Chunk", "type": "main", "index": 0 }],
+        [{ "node": "Fetch Full Transcript", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Full Transcript":        { "main": [[{ "node": "Format Transcript for OpenAI", "type": "main", "index": 0 }]] },
+    "Format Transcript for OpenAI": { "main": [[{ "node": "OpenAI Summarize", "type": "main", "index": 0 }]] },
+    "OpenAI Summarize":             { "main": [[{ "node": "Parse Summary", "type": "main", "index": 0 }]] },
+    "Parse Summary":                { "main": [[{ "node": "Update Call in MongoDB", "type": "main", "index": 0 }]] },
+    "Update Call in MongoDB":       { "main": [[{ "node": "Upsert Lead", "type": "main", "index": 0 }]] },
+    "Upsert Lead":                  { "main": [[{ "node": "Notify Flowcheq: AI Call Completed", "type": "main", "index": 0 }]] },
+    "Notify Flowcheq: AI Call Completed": { "main": [[{ "node": "Telegram Notification", "type": "main", "index": 0 }]] }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "error-handler-workflow"
+  },
+  "tags": ["voice", "livekit", "transcript", "production"]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "ai-voice-system",
+  "version": "1.0.0",
+  "description": "Production AI voice call handling — Telnyx + LiveKit + n8n + OpenAI + MongoDB",
+  "main": "server.js",
+  "scripts": {
+    "start":   "node server.js",
+    "dev":     "nodemon server.js",
+    "agent":   "python livekit-agent/agent_worker.py start",
+    "agent:dev":"python livekit-agent/agent_worker.py dev"
+  },
+  "dependencies": {
+    "axios":              "^1.7.0",
+    "dotenv":             "^16.4.5",
+    "express":            "^4.19.2",
+    "livekit-server-sdk": "^2.5.0",
+    "mongoose":           "^8.5.0",
+    "node-fetch":         "^3.3.2",
+    "openai":             "^4.55.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,448 @@
+{
+  "name": "WORKFLOW 1 — Telnyx Call Router (Human First, AI Fallback)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telnyx/events",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      },
+      "name": "Telnyx Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "telnyx-inbound-call"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst rawBody = $input.item.binary?.body?.data\n  ? Buffer.from($input.item.binary.body.data, 'base64').toString('utf8')\n  : JSON.stringify($input.item.json);\n\nconst signatureHeader = $input.item.headers?.['telnyx-signature-ed25519'];\nconst timestampHeader = $input.item.headers?.['telnyx-timestamp'];\n\nif (!signatureHeader || !timestampHeader) {\n  throw new Error('Missing Telnyx signature headers');\n}\n\nconst tolerance = 300;\nconst now = Math.floor(Date.now() / 1000);\nconst ts = parseInt(timestampHeader, 10);\nif (Math.abs(now - ts) > tolerance) throw new Error('Webhook timestamp stale');\n\nconst payload = `${timestampHeader}|${rawBody}`;\nconst sigBuffer = Buffer.from(signatureHeader, 'base64');\nconst keyBuffer = Buffer.from($env.TELNYX_PUBLIC_KEY, 'base64');\nconst isValid = crypto.verify(null, Buffer.from(payload), { key: keyBuffer, format: 'der', type: 'spki' }, sigBuffer);\nif (!isValid) throw new Error('Invalid Telnyx signature');\n\nconst body = JSON.parse(rawBody);\nconst { data } = body;\n\nreturn [{\n  json: {\n    verified: true,\n    event_type: data.event_type,\n    call_control_id: data.payload.call_control_id,\n    call_session_id: data.payload.call_session_id,\n    caller_number: data.payload.from,\n    called_number: data.payload.to,\n    direction: data.payload.direction,\n    received_at: new Date().toISOString(),\n  }\n}];"
+      },
+      "name": "Verify & Parse Webhook",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{ $json.event_type }}", "operation": "equals", "value2": "call.initiated" }]
+        }
+      },
+      "name": "Is call.initiated?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{ $json.event_type }}", "operation": "equals", "value2": "call.answered" }]
+        }
+      },
+      "name": "Is call.answered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{ $json.event_type }}", "operation": "equals", "value2": "call.hangup" }]
+        }
+      },
+      "name": "Is call.hangup?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 660]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "ok",
+        "options": { "responseCode": 200 }
+      },
+      "name": "200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $json.call_session_id }}\",\n  \"caller_number\": \"{{ $json.caller_number }}\",\n  \"status\": \"initiated\",\n  \"start_time\": \"{{ $json.received_at }}\",\n  \"telnyx_call_control_id\": \"{{ $json.call_control_id }}\"\n}"
+      },
+      "name": "Save Call to Voice DB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 380]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.FLOWCHEQ_API_URL }}/api/webhook/voice/call-started",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.FLOWCHEQ_WEBHOOK_SECRET }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $('Verify & Parse Webhook').item.json.call_session_id }}\",\n  \"caller_number\": \"{{ $('Verify & Parse Webhook').item.json.caller_number }}\",\n  \"call_control_id\": \"{{ $('Verify & Parse Webhook').item.json.call_control_id }}\",\n  \"direction\": \"inbound\"\n}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Notify Flowcheq: Call Started",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 380]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telnyx.com/v2/calls/{{ $('Verify & Parse Webhook').item.json.call_control_id }}/actions/answer",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Answer Inbound Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 380]
+    },
+    {
+      "parameters": {
+        "url": "https://api.telnyx.com/v2/calls",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"connection_id\": \"{{ $env.TELNYX_CONNECTION_ID }}\",\n  \"to\": \"{{ $env.HUMAN_FORWARD_NUMBER }}\",\n  \"from\": \"{{ $env.TELNYX_PHONE_NUMBER }}\",\n  \"link_to\": \"{{ $('Verify & Parse Webhook').item.json.call_control_id }}\",\n  \"timeout_secs\": {{ $env.HUMAN_RING_TIMEOUT_SEC || 30 }}\n}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Simulring: Human Phone",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.telnyx.com/v2/calls",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"connection_id\": \"{{ $env.TELNYX_CONNECTION_ID }}\",\n  \"to\": \"sip:{{ $env.AGENT_WEBRTC_SIP_USERNAME }}@sip.telnyx.com\",\n  \"from\": \"{{ $env.TELNYX_PHONE_NUMBER }}\",\n  \"link_to\": \"{{ $('Verify & Parse Webhook').item.json.call_control_id }}\",\n  \"timeout_secs\": {{ $env.HUMAN_RING_TIMEOUT_SEC || 30 }}\n}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Simulring: WebRTC Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 460]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $env.HUMAN_RING_TIMEOUT_SEC || 8 }}",
+        "unit": "seconds"
+      },
+      "name": "Wait for Human",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1780, 380]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telnyx.com/v2/calls/{{ $('Verify & Parse Webhook').item.json.call_control_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth"
+      },
+      "name": "Get Call State",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2000, 380]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.data?.is_alive === true && ($json.data?.state === 'answered' || $json.data?.state === 'bridging') }}",
+              "operation": "equals",
+              "value2": "true"
+            }
+          ]
+        }
+      },
+      "name": "Human Answered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2220, 380]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $('Verify & Parse Webhook').item.json.call_session_id }}",
+        "method": "PATCH",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"status\": \"human_handled\" }"
+      },
+      "name": "Update Status: human_handled",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2440, 280]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.FLOWCHEQ_API_URL }}/api/webhook/voice/call-answered",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.FLOWCHEQ_WEBHOOK_SECRET }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $('Verify & Parse Webhook').item.json.call_session_id }}\",\n  \"caller_number\": \"{{ $('Verify & Parse Webhook').item.json.caller_number }}\",\n  \"answered_by\": \"human\"\n}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Notify Flowcheq: Human Answered (timeout path)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2660, 280]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telnyx.com/v2/calls/{{ $('Verify & Parse Webhook').item.json.call_control_id }}/actions/answer",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Answer Call (AI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2440, 480]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.APP_BASE_URL }}/livekit/init-session",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $('Verify & Parse Webhook').item.json.call_session_id }}\",\n  \"caller_number\": \"{{ $('Verify & Parse Webhook').item.json.caller_number }}\"\n}"
+      },
+      "name": "Init LiveKit Session",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2660, 480]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telnyx.com/v2/calls/{{ $('Verify & Parse Webhook').item.json.call_control_id }}/actions/transfer",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"to\": \"{{ $json.sip_uri }}\",\n  \"from\": \"{{ $env.TELNYX_PHONE_NUMBER }}\"\n}"
+      },
+      "name": "Bridge to LiveKit SIP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [2880, 480]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $('Verify & Parse Webhook').item.json.call_session_id }}",
+        "method": "PATCH",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"ai_handled\",\n  \"livekit_session_id\": \"{{ $('Init LiveKit Session').item.json.room_name }}\"\n}"
+      },
+      "name": "Update Status: ai_handled",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [3100, 480]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $('Verify & Parse Webhook').item.json.call_session_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Fetch Call on Answered",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "notEqual",
+              "value2": "ai_handled"
+            }
+          ]
+        }
+      },
+      "name": "Not AI Handled Yet?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 480]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.FLOWCHEQ_API_URL }}/api/webhook/voice/call-answered",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.FLOWCHEQ_WEBHOOK_SECRET }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $('Verify & Parse Webhook').item.json.call_session_id }}\",\n  \"caller_number\": \"{{ $('Verify & Parse Webhook').item.json.caller_number }}\",\n  \"answered_by\": \"human\"\n}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Notify Flowcheq: Human Answered (event)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 480]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $('Verify & Parse Webhook').item.json.call_session_id }}",
+        "method": "PATCH",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"status\": \"human_handled\" }",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Patch human_handled (event)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 480]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $('Verify & Parse Webhook').item.json.call_session_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        }
+      },
+      "name": "Fetch Call on Hangup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 660]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equals",
+              "value2": "human_handled"
+            }
+          ]
+        }
+      },
+      "name": "Was Human Handled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 660]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.FLOWCHEQ_API_URL }}/api/webhook/voice/call-completed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.FLOWCHEQ_WEBHOOK_SECRET }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $('Verify & Parse Webhook').item.json.call_session_id }}\",\n  \"caller_number\": \"{{ $json.caller_number }}\",\n  \"direction\": \"inbound\",\n  \"status\": \"completed\",\n  \"handled_by\": \"human\",\n  \"duration\": 0\n}"
+      },
+      "name": "Notify Flowcheq: Human Call Ended",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 660]
+    }
+  ],
+  "connections": {
+    "Telnyx Webhook": { "main": [[{ "node": "Verify & Parse Webhook", "type": "main", "index": 0 }]] },
+    "Verify & Parse Webhook": { "main": [[{ "node": "Is call.initiated?", "type": "main", "index": 0 }]] },
+    "Is call.initiated?": {
+      "main": [
+        [{ "node": "200 OK", "type": "main", "index": 0 }, { "node": "Save Call to Voice DB", "type": "main", "index": 0 }],
+        [{ "node": "Is call.answered?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is call.answered?": {
+      "main": [
+        [{ "node": "200 OK", "type": "main", "index": 0 }, { "node": "Fetch Call on Answered", "type": "main", "index": 0 }],
+        [{ "node": "Is call.hangup?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is call.hangup?": {
+      "main": [
+        [{ "node": "200 OK", "type": "main", "index": 0 }, { "node": "Fetch Call on Hangup", "type": "main", "index": 0 }],
+        [{ "node": "200 OK", "type": "main", "index": 0 }]
+      ]
+    },
+    "Save Call to Voice DB": { "main": [[{ "node": "Notify Flowcheq: Call Started", "type": "main", "index": 0 }]] },
+    "Notify Flowcheq: Call Started": { "main": [[{ "node": "Answer Inbound Call", "type": "main", "index": 0 }]] },
+    "Answer Inbound Call": {
+      "main": [[{ "node": "Simulring: Human Phone", "type": "main", "index": 0 }, { "node": "Simulring: WebRTC Agent", "type": "main", "index": 0 }]]
+    },
+    "Simulring: Human Phone": { "main": [[{ "node": "Wait for Human", "type": "main", "index": 0 }]] },
+    "Simulring: WebRTC Agent": { "main": [[{ "node": "Wait for Human", "type": "main", "index": 0 }]] },
+    "Wait for Human": { "main": [[{ "node": "Get Call State", "type": "main", "index": 0 }]] },
+    "Get Call State": { "main": [[{ "node": "Human Answered?", "type": "main", "index": 0 }]] },
+    "Human Answered?": {
+      "main": [
+        [{ "node": "Update Status: human_handled", "type": "main", "index": 0 }],
+        [{ "node": "Answer Call (AI)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Status: human_handled": { "main": [[{ "node": "Notify Flowcheq: Human Answered (timeout path)", "type": "main", "index": 0 }]] },
+    "Answer Call (AI)": { "main": [[{ "node": "Init LiveKit Session", "type": "main", "index": 0 }]] },
+    "Init LiveKit Session": { "main": [[{ "node": "Bridge to LiveKit SIP", "type": "main", "index": 0 }]] },
+    "Bridge to LiveKit SIP": { "main": [[{ "node": "Update Status: ai_handled", "type": "main", "index": 0 }]] },
+    "Fetch Call on Answered": { "main": [[{ "node": "Not AI Handled Yet?", "type": "main", "index": 0 }]] },
+    "Not AI Handled Yet?": {
+      "main": [[{ "node": "Notify Flowcheq: Human Answered (event)", "type": "main", "index": 0 }], []]
+    },
+    "Notify Flowcheq: Human Answered (event)": { "main": [[{ "node": "Patch human_handled (event)", "type": "main", "index": 0 }]] },
+    "Fetch Call on Hangup": { "main": [[{ "node": "Was Human Handled?", "type": "main", "index": 0 }]] },
+    "Was Human Handled?": {
+      "main": [[{ "node": "Notify Flowcheq: Human Call Ended", "type": "main", "index": 0 }], []]
+    }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1", "errorWorkflow": "error-handler-workflow" },
+  "tags": ["voice", "telnyx", "production"]
+}

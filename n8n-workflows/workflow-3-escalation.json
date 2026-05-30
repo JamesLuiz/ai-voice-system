@@ -1,0 +1,180 @@
+{
+  "name": "WORKFLOW 3 — Real-Time Escalation Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "livekit/escalation",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "Escalation Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "livekit-escalation"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { call_id, caller_number, reason, timestamp, action } = $json;\nif (!call_id || !caller_number) throw new Error('Missing call_id or caller_number');\nconst HIGH = ['urgent','emergency','speak to a human','real person','manager','agent_decision'];\nconst isHighPriority = HIGH.some(r => (reason||'').toLowerCase().includes(r));\nconst alertText = [\n  isHighPriority ? '🚨 ESCALATION' : '⚠️ ESCALATION',\n  `Call ID: ${call_id}`,\n  `Caller: ${caller_number}`,\n  `Reason: ${reason || 'Not specified'}`,\n].join('\\n');\nreturn [{ json: { call_id, caller_number, reason, is_high_priority: isHighPriority, alert_text: alertText, timestamp: timestamp || new Date().toISOString(), action: action || 'transfer_to_human' } }];"
+      },
+      "name": "Evaluate Escalation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.FLOWCHEQ_API_URL }}/api/webhook/voice/escalation",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.FLOWCHEQ_WEBHOOK_SECRET }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"call_id\": \"{{ $json.call_id }}\",\n  \"caller_number\": \"{{ $json.caller_number }}\",\n  \"reason\": \"{{ $json.reason }}\"\n}",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Notify Flowcheq: Escalation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [580, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $('Evaluate Escalation').item.json.call_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        }
+      },
+      "name": "Fetch Call Control ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/calls/{{ $('Evaluate Escalation').item.json.call_id }}",
+        "method": "PATCH",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"status\": \"escalated\", \"escalated\": true, \"escalation_reason\": \"{{ $('Evaluate Escalation').item.json.reason }}\" }"
+      },
+      "name": "Mark Call Escalated",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telnyx.com/v2/calls/{{ $('Fetch Call Control ID').item.json.telnyx_call_control_id }}/actions/transfer",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"to\": \"{{ $env.HUMAN_FORWARD_NUMBER }}\", \"from\": \"{{ $env.TELNYX_PHONE_NUMBER }}\" }",
+        "options": { "response": { "response": { "neverError": true } } }
+      },
+      "name": "Transfer to Human (Telnyx)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $('Evaluate Escalation').item.json.alert_text }}"
+      },
+      "name": "Telegram Escalation Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1340, 300],
+      "credentials": {
+        "telegramApi": { "id": "telegram-bot-creds", "name": "Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $('Evaluate Escalation').item.json.is_high_priority }}", "value2": true }]
+        }
+      },
+      "name": "Is High Priority?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONGO_API_URL }}/leads/{{ $('Evaluate Escalation').item.json.caller_number }}",
+        "method": "PATCH",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "x-api-key", "value": "={{ $env.INTERNAL_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"urgency\": \"high\", \"status\": \"contacted\", \"score\": 90 }"
+      },
+      "name": "Flag Lead High-Priority",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1780, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.ALERT_FROM_EMAIL }}",
+        "toEmail": "={{ $env.ALERT_TO_EMAIL }}",
+        "subject": "HIGH PRIORITY CALL — Immediate Action Required",
+        "emailFormat": "text",
+        "text": "={{ $('Evaluate Escalation').item.json.alert_text }}"
+      },
+      "name": "Send Urgent Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1780, 400],
+      "credentials": {
+        "smtp": { "id": "smtp-creds", "name": "SMTP Account" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"escalated\", \"call_id\": \"{{ $('Evaluate Escalation').item.json.call_id }}\" }",
+        "options": { "responseCode": 200 }
+      },
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2000, 300]
+    }
+  ],
+  "connections": {
+    "Escalation Webhook": { "main": [[{ "node": "Evaluate Escalation", "type": "main", "index": 0 }]] },
+    "Evaluate Escalation": { "main": [[{ "node": "Notify Flowcheq: Escalation", "type": "main", "index": 0 }]] },
+    "Notify Flowcheq: Escalation": { "main": [[{ "node": "Fetch Call Control ID", "type": "main", "index": 0 }]] },
+    "Fetch Call Control ID": { "main": [[{ "node": "Mark Call Escalated", "type": "main", "index": 0 }]] },
+    "Mark Call Escalated": { "main": [[{ "node": "Transfer to Human (Telnyx)", "type": "main", "index": 0 }]] },
+    "Transfer to Human (Telnyx)": { "main": [[{ "node": "Telegram Escalation Alert", "type": "main", "index": 0 }]] },
+    "Telegram Escalation Alert": { "main": [[{ "node": "Is High Priority?", "type": "main", "index": 0 }]] },
+    "Is High Priority?": {
+      "main": [
+        [
+          { "node": "Flag Lead High-Priority", "type": "main", "index": 0 },
+          { "node": "Send Urgent Email", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Respond 200", "type": "main", "index": 0 }]
+      ]
+    },
+    "Flag Lead High-Priority": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] },
+    "Send Urgent Email": { "main": [[{ "node": "Respond 200", "type": "main", "index": 0 }]] }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1", "errorWorkflow": "error-handler-workflow" },
+  "tags": ["voice", "escalation", "production"]
+}

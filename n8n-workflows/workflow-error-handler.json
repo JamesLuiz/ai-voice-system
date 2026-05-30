@@ -1,0 +1,42 @@
+{
+  "name": "ERROR HANDLER — All Workflows",
+  "nodes": [
+    {
+      "parameters": {},
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const error = $json;\nconst workflowName = error.workflow?.name || 'Unknown';\nconst nodeError    = error.execution?.error?.message || 'No message';\nconst nodeErrorNode = error.execution?.lastNodeExecuted || 'Unknown node';\n\nreturn [{ json: {\n  workflow_name: workflowName,\n  error_node:    nodeErrorNode,\n  error_message: nodeError,\n  timestamp:     new Date().toISOString(),\n  alert: `⚠️ WORKFLOW ERROR\\nWorkflow: ${workflowName}\\nNode: ${nodeErrorNode}\\nError: ${nodeError}`,\n} }];"
+      },
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text":   "={{ $json.alert }}",
+        "additionalFields": {}
+      },
+      "name": "Telegram Error Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "credentials": {
+        "telegramApi": { "id": "telegram-bot-creds", "name": "Telegram Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": { "main": [[{ "node": "Format Error",         "type": "main", "index": 0 }]] },
+    "Format Error":  { "main": [[{ "node": "Telegram Error Alert", "type": "main", "index": 0 }]] }
+  },
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "tags": ["error-handling", "production"]
+}

@@ -1,0 +1,23 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install audio dependencies for Silero VAD
+RUN apt-get update && apt-get install -y \
+    libsndfile1 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY livekit-agent/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY livekit-agent/agent_worker.py .
+
+# Non-root user
+RUN useradd -m -u 1001 appuser
+USER appuser
+
+# Download Silero VAD model at build time
+RUN python -c "from livekit.plugins import silero; silero.VAD.load()" || true
+
+CMD ["python", "agent_worker.py", "start"]
