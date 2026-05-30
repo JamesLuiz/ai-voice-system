@@ -9,56 +9,93 @@
  *  - Build SIP invite URIs for Telnyx bridge
  */
 
-const { AccessToken, RoomServiceClient }  = require('livekit-server-sdk');
+const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
 const axios = require('axios');
 
-const LK_HOST         = process.env.LIVEKIT_HOST;           // wss://your.livekit.cloud
-const LK_API_KEY      = process.env.LIVEKIT_API_KEY;
-const LK_API_SECRET   = process.env.LIVEKIT_API_SECRET;
-const LK_SIP_URI      = process.env.LIVEKIT_SIP_URI;        // sip:xxx@sip.livekit.io
-const LK_SIP_TRUNK_ID = process.env.LIVEKIT_SIP_TRUNK_ID;
+let _roomService = null;
 
-const roomService = new RoomServiceClient(LK_HOST, LK_API_KEY, LK_API_SECRET);
+function livekitHost() {
+  return process.env.LIVEKIT_HOST || process.env.LIVEKIT_URL;
+}
+
+function livekitApiKey() {
+  return process.env.LIVEKIT_API_KEY;
+}
+
+function livekitApiSecret() {
+  return process.env.LIVEKIT_API_SECRET;
+}
+
+function livekitSipUri() {
+  return process.env.LIVEKIT_SIP_URI;
+}
+
+function livekitSipTrunkId() {
+  return process.env.LIVEKIT_SIP_TRUNK_ID;
+}
+
+function requireLiveKitConfig() {
+  const missing = [];
+  if (!livekitHost()) missing.push('LIVEKIT_HOST or LIVEKIT_URL');
+  if (!livekitApiKey()) missing.push('LIVEKIT_API_KEY');
+  if (!livekitApiSecret()) missing.push('LIVEKIT_API_SECRET');
+  if (!livekitSipUri()) missing.push('LIVEKIT_SIP_URI');
+  if (!livekitSipTrunkId()) missing.push('LIVEKIT_SIP_TRUNK_ID');
+  if (missing.length) {
+    throw new Error(`LiveKit not configured: set ${missing.join(', ')}`);
+  }
+}
+
+function getRoomService() {
+  requireLiveKitConfig();
+  if (!_roomService) {
+    _roomService = new RoomServiceClient(
+      livekitHost(),
+      livekitApiKey(),
+      livekitApiSecret(),
+    );
+  }
+  return _roomService;
+}
+
+function httpsHost() {
+  return livekitHost().replace('wss://', 'https://').replace('ws://', 'http://');
+}
 
 // ─────────────────────────────────────────────
 // TOKEN GENERATION
 // ─────────────────────────────────────────────
 
-/**
- * Create a short-lived access token for the AI agent participant.
- */
 function createAgentToken(roomName, participantName = 'ai-receptionist') {
-  const token = new AccessToken(LK_API_KEY, LK_API_SECRET, {
+  requireLiveKitConfig();
+  const token = new AccessToken(livekitApiKey(), livekitApiSecret(), {
     identity: participantName,
     ttl:      '4h',
   });
   token.addGrant({
-    roomJoin:         true,
-    room:             roomName,
-    canPublish:       true,
-    canSubscribe:     true,
-    canPublishData:   true,
-    roomCreate:       true,
-    roomAdmin:        true,
-    ingressAdmin:     false,
+    roomJoin:       true,
+    room:           roomName,
+    canPublish:     true,
+    canSubscribe:   true,
+    canPublishData: true,
+    roomCreate:     true,
+    roomAdmin:      true,
+    ingressAdmin:   false,
   });
   return token.toJwt();
 }
 
-/**
- * Create a caller-side token (read-only data, no publishing needed — caller
- * audio arrives via SIP bridge, not WebRTC).
- */
 function createCallerToken(roomName, callerNumber) {
-  const token = new AccessToken(LK_API_KEY, LK_API_SECRET, {
+  requireLiveKitConfig();
+  const token = new AccessToken(livekitApiKey(), livekitApiSecret(), {
     identity: `caller-${callerNumber.replace(/\D/g, '')}`,
     ttl:      '2h',
   });
   token.addGrant({
-    roomJoin:    true,
-    room:        roomName,
-    canPublish:  false,
-    canSubscribe:true,
+    roomJoin:     true,
+    room:         roomName,
+    canPublish:   false,
+    canSubscribe: true,
   });
   return token.toJwt();
 }
@@ -67,73 +104,55 @@ function createCallerToken(roomName, callerNumber) {
 // ROOM MANAGEMENT
 // ─────────────────────────────────────────────
 
-/**
- * Create (or ensure) a LiveKit room for this call session.
- */
 async function createRoom(roomName, metadata = {}) {
-  const room = await roomService.createRoom({
-    name:              roomName,
-    emptyTimeout:      300,          // auto-delete 5 min after everyone leaves
-    maxParticipants:   10,
-    metadata:          JSON.stringify(metadata),
+  const roomService = getRoomService();
+  return roomService.createRoom({
+    name:            roomName,
+    emptyTimeout:    300,
+    maxParticipants: 10,
+    metadata:        JSON.stringify(metadata),
   });
-  return room;
 }
 
-/**
- * Delete a LiveKit room when the call ends.
- */
 async function deleteRoom(roomName) {
   try {
-    await roomService.deleteRoom(roomName);
+    await getRoomService().deleteRoom(roomName);
   } catch (err) {
-    // Ignore "not found" errors — room may have self-deleted
     if (!err.message?.includes('not found')) throw err;
   }
 }
 
-/**
- * List all participants in a room (used for escalation detection).
- */
 async function listParticipants(roomName) {
-  return roomService.listParticipants(roomName);
+  return getRoomService().listParticipants(roomName);
 }
 
 // ─────────────────────────────────────────────
 // SIP BRIDGE
 // ─────────────────────────────────────────────
 
-/**
- * Build the SIP URI that Telnyx should bridge the call to.
- * Format: sip:{room}@{trunk-host}
- */
 function buildSipUri(roomName) {
-  // LK_SIP_URI example: sip.livekit.cloud  (no sip: prefix stored in env)
-  return `sip:${encodeURIComponent(roomName)}@${LK_SIP_URI}`;
+  requireLiveKitConfig();
+  return `sip:${encodeURIComponent(roomName)}@${livekitSipUri()}`;
 }
 
-/**
- * Create a SIP dispatch rule via LiveKit API so the SIP trunk
- * routes inbound SIP to the correct room.
- */
 async function createSipDispatchRule(roomName, callId) {
   const response = await axios.post(
-    `${LK_HOST.replace('wss://', 'https://')}/twirp/livekit.SIP/CreateSIPDispatchRule`,
+    `${httpsHost()}/twirp/livekit.SIP/CreateSIPDispatchRule`,
     {
       rule: {
         dispatch_rule_direct: {
-          room_name:    roomName,
-          pin:          '',
+          room_name: roomName,
+          pin:       '',
         },
       },
-      trunk_ids: [LK_SIP_TRUNK_ID],
-      name:      `call-${callId}`,
-      metadata:  JSON.stringify({ call_id: callId }),
+      trunk_ids:         [livekitSipTrunkId()],
+      name:              `call-${callId}`,
+      metadata:          JSON.stringify({ call_id: callId }),
       hide_phone_number: false,
     },
     {
       headers: {
-        Authorization: `Bearer ${createAgentToken(roomName, 'sip-admin')}`,
+        Authorization:  `Bearer ${createAgentToken(roomName, 'sip-admin')}`,
         'Content-Type': 'application/json',
       },
     },
@@ -145,28 +164,22 @@ async function createSipDispatchRule(roomName, callId) {
 // AGENT DISPATCH
 // ─────────────────────────────────────────────
 
-/**
- * Dispatch the AI agent worker to join the room.
- * The worker must be pre-deployed and listening for dispatch requests.
- */
 async function dispatchAgent(roomName, callerNumber, callId) {
-  const dispatchPayload = {
-    agent_name:   process.env.LIVEKIT_AGENT_NAME || 'ai-receptionist',
-    room:         roomName,
-    metadata: JSON.stringify({
-      call_id:       callId,
-      caller_number: callerNumber,
-      persona:       'receptionist',
-      instructions:  buildAgentInstructions(callerNumber),
-    }),
-  };
-
   const response = await axios.post(
-    `${LK_HOST.replace('wss://', 'https://')}/twirp/livekit.AgentDispatch/CreateDispatch`,
-    dispatchPayload,
+    `${httpsHost()}/twirp/livekit.AgentDispatch/CreateDispatch`,
+    {
+      agent_name: process.env.LIVEKIT_AGENT_NAME || 'ai-receptionist',
+      room:       roomName,
+      metadata:   JSON.stringify({
+        call_id:       callId,
+        caller_number: callerNumber,
+        persona:       'receptionist',
+        instructions:  buildAgentInstructions(callerNumber),
+      }),
+    },
     {
       headers: {
-        Authorization: `Bearer ${createAgentToken(roomName, 'dispatcher')}`,
+        Authorization:  `Bearer ${createAgentToken(roomName, 'dispatcher')}`,
         'Content-Type': 'application/json',
       },
     },
@@ -178,17 +191,11 @@ async function dispatchAgent(roomName, callerNumber, callId) {
 // FULL SESSION BOOTSTRAP
 // ─────────────────────────────────────────────
 
-/**
- * One-call bootstrap: creates room, dispatch rule, dispatches agent.
- * Returns everything n8n needs to bridge the Telnyx call.
- */
 async function initializeCallSession(callId, callerNumber) {
   const roomName = `call-${callId}`;
 
-  // 1. Create LiveKit room
   await createRoom(roomName, { call_id: callId, caller_number: callerNumber });
 
-  // 2. Register SIP dispatch rule
   let dispatchRule;
   try {
     dispatchRule = await createSipDispatchRule(roomName, callId);
@@ -196,27 +203,18 @@ async function initializeCallSession(callId, callerNumber) {
     console.error('[LiveKit] SIP dispatch rule error (non-fatal):', err.message);
   }
 
-  // 3. Dispatch AI agent worker
   const agentDispatch = await dispatchAgent(roomName, callerNumber, callId);
-
-  // 4. Build SIP URI for Telnyx bridge
   const sipUri = buildSipUri(roomName);
-
-  // 5. Generate agent JWT (for n8n to pass to agent if needed via metadata)
   const agentToken = createAgentToken(roomName);
 
   return {
-    room_name:     roomName,
-    sip_uri:       sipUri,
-    agent_token:   agentToken,
-    dispatch_rule: dispatchRule,
+    room_name:      roomName,
+    sip_uri:        sipUri,
+    agent_token:    agentToken,
+    dispatch_rule:  dispatchRule,
     agent_dispatch: agentDispatch,
   };
 }
-
-// ─────────────────────────────────────────────
-// AGENT INSTRUCTIONS BUILDER
-// ─────────────────────────────────────────────
 
 function buildAgentInstructions(callerNumber) {
   return `You are a professional AI receptionist. Be warm, concise, and natural.
