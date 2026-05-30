@@ -1,71 +1,56 @@
-# Project tests
-**/*.test.ts
-**/*.spec.ts
-__tests__/
-tests/
-evals/
-
-# Node.js dependencies
+# Dependencies & caches
 node_modules
-npm-debug.log
-yarn-error.log
-pnpm-debug.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store
 
-# Build outputs
-dist/
-build/
-coverage/
-
-# Local environment & config files
+# Secrets — never bake into the API image
 .env
-.env.local
-.DS_Store
+.env.*
+!.env.example
+config/.env
+config/.env.local
+livekit-agent/.env
+livekit-agent/secrets.env
 
-# Logs & temp files
-*.log
-*.gz
-*.tgz
-.tmp
-.cache
+# Python agent (deployed separately on LiveKit Cloud)
+livekit-agent/.venv
+livekit-agent/venv
+livekit-agent/__pycache__
+livekit-agent/agent_worker.py
+livekit-agent/requirements.txt
+livekit-agent/Dockerfile
+livekit-agent/livekit.toml
+Dockerfile.agent
 
-# Docker artifacts
-Dockerfile*
-.dockerignore
+# Local compose / ops (not needed in Coolify API image)
+docker-compose.yml
+mongo_data
+postgres_data
+n8n_data
 
-# Git & Editor files
+# Docs & workflows (not runtime)
+docs
+n8n-workflows
+README.md
+
+# Git & IDE
 .git
 .gitignore
 .idea
 .vscode
+.cursor
+*.md
+!README.md
 
-# Test artifacts
-coverage/
+# Tests
+**/*.test.js
+**/*.spec.js
+__tests__
+tests
+coverage
 
-# Project docs and misc
-README.md
-CONTRIBUTING.md
-LICENSE
-
-# Coding agent files
-.claude/
-.codex/
-.cursor/
-.windsurf/
-.gemini/
-.cline/
-.clinerules
-.clinerules/
-.aider*
-.cursorrules
-.cursorignore
-.cursorindexingignore
-.clineignore
-.codeiumignore
-.geminiignore
-.windsurfrules
-CLAUDE.md
-AGENTS.md
-GEMINI.md
-.github/copilot-instructions.md
-.github/personal-instructions.md
-.github/instructions/
+# OS
+.DS_Store
+Thumbs.db

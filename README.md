@@ -53,4 +53,4 @@ cp config/.env.example config/.env
 docker compose up -d --build
 ```
 
-See [docs/HANDBOOK.md](docs/HANDBOOK.md) for the full step-by-step handbook (deploy, n8n, Telnyx, LiveKit, and Flowcheq frontend integration), or [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for a shorter ops-focused guide.
+See [docs/COOLIFY.md](docs/COOLIFY.md) for **Coolify** (Node API only), [docs/HANDBOOK.md](docs/HANDBOOK.md) for the full handbook, or [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for ops-focused setup.
